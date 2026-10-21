@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">UVC盲区辅助</string>
+    <string name="status_usb_waiting">USB 初始化中…</string>
+    <string name="status_no_device">未检测到 UVC 设备</string>
+    <string name="btn_refresh">刷新设备</string>
+    <string name="btn_permission">申请权限</string>
+    <string name="btn_toggle_layout">切换单/双屏</string>
+    <string name="camera_left">左盲区</string>
+    <string name="camera_right">右盲区</string>
+    <string name="channel_name">UVC盲区辅助保活</string>
+    <string name="channel_desc">保持 USB 摄像头预览与录像在后台运行</string>
+    <string name="notification_text">盲区辅助服务运行中</string>
+</resources>

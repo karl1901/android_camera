@@ -1,0 +1,3 @@
+# 复制本文件为 local.properties（已被 .gitignore 忽略），按本机 SDK 路径修改
+# macOS 默认路径：
+sdk.dir=/Users/karl/Library/Android/sdk

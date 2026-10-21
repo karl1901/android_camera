@@ -1,0 +1,8 @@
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="panel_bg">#FF101418</color>
+    <color name="status_ok">#FF2E7D32</color>
+    <color name="status_err">#FFC62828</color>
+    <color name="brand_blue">#FF1565C0</color>
+</resources>

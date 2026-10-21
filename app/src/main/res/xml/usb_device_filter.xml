@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  USB 设备过滤：
+  UVC 摄像头在设备描述符层级的 class 通常为 0(由接口描述)、239(Miscellaneous)，
+  接口层级才是 class=14(Video)。为避免漏掉鼎微/方易通车机上的非标设备，
+  这里留空 usb-device 节点（匹配所有 USB 设备），真正的 UVC 识别交给
+  native libuvc 打开设备时探测，不匹配则放弃。
+-->
+<resources>
+    <usb-device />
+</resources>

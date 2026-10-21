@@ -48,6 +48,10 @@ target_compile_definitions(usb_static PUBLIC
     HAVE_PIPE2=1
     HAVE_ACCEPT4=1
     HAVE_STRUCT_TIMESPEC=1
+    # 启用 libusb 日志框架（否则 usbi_dbg/usbi_warn 全部被编译为空），
+    # 并让日志走 Android __android_log_write（标签 "libusb"）
+    ENABLE_LOGGING=1
+    USE_SYSTEM_LOGGING_FACILITY=1
     # 不定义 HAVE_LIBUDEV（Android 无 udev）；热插拔由 Java 广播负责
     "DEFAULT_VISIBILITY=__attribute__((visibility(\"default\")))"
 )

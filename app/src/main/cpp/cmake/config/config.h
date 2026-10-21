@@ -21,6 +21,9 @@
 #define HAVE_NETLINK 1
 #define HAVE_SYSLOG_H 1
 
+/* printf 格式检查（启用 ENABLE_LOGGING 后 libusbi.h 需要） */
+#define PRINTF_FORMAT(a, b) __attribute__((__format__(__printf__, a, b)))
+
 /* Android 无 udev */
 /* #undef USE_UDEV */
 

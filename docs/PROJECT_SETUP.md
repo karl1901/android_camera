@@ -17,56 +17,79 @@ UVC 盲区辅助 APP（鼎微 TS20 / 安卓13 / 双路 AHD→UVC MJPEG 摄像头
 | ABI | armeabi-v7a + arm64-v8a |
 | Java/Kotlin 字节码 | **source/target = 17、jvmTarget = 17**（minSdk21 由 D8 脱糖，注意不要在 minSdk21 上直接使用 java.time 等新 API，需用时开启 coreLibraryDesugaring） |
 | 16KB 页对齐 | CMake 已加 `-Wl,-z,max-page-size=16384`；DataStore 1.1.7+ 已对齐（Android 15+ 强制校验，Android 17 会弹兼容性警告） |
-| NDK | 27.2.12479018（r27b） |
+| NDK | 27.2.12479018（r27c） |
 | CMake | 3.22.1（SDK Manager 内置） |
 | UI | 原生 Kotlin + XML ViewBinding（不用 Compose / Flutter / AAOS） |
 
-## 2. 首次拉取后的初始化步骤
+## 2. 本机环境路径
 
-```bash
+**当前开发机：Windows（PowerShell 7 / pwsh）**
+
+| 项 | 路径 |
+|---|---|
+| JDK 17 | `D:\karl_word\java\jdk\17` |
+| Android SDK | `C:\Users\karl\AppData\Local\Android\Sdk` |
+| Gradle 8.14.3 | `D:\karl_word\java\gradle\8.14.3\gradle-8.14.3` |
+
+旧 macOS 开发机路径（保留备查）：JDK `/Library/Java/JavaVirtualMachines/jdk-17.jdk/Contents/Home`、
+SDK `/Users/karl/Library/Android/sdk`、Gradle `/Users/karl/Documents/java/gradle/8.14.3/gradle-8.14.3`。
+
+## 3. 首次拉取后的初始化步骤
+
+```powershell
 # 1) 拉取 libusb v1.0.27 / libuvc v0.0.7 源码（不入 Git）
-bash scripts/setup-native.sh
+pwsh scripts/setup-native.ps1
 
 # 2) 复制本机 SDK 路径配置（已被 .gitignore 忽略）
-cp local.properties.example local.properties
-# 按需修改 sdk.dir
+Copy-Item local.properties.example local.properties
+# 按需修改 sdk.dir（Windows 写法：sdk.dir=C\:\\Users\\karl\\AppData\\Local\\Android\\Sdk）
 ```
+
+macOS 下对应命令为 `bash scripts/setup-native.sh`、`cp local.properties.example local.properties`。
 
 然后在 Android Studio 中打开项目：
 
-1. **Settings → Build Tools → Gradle → Gradle JDK 必须选择 17**：
-   - 若下拉没有 jbr-17，可选择本机 JDK 17（如 `/Library/Java/JavaVirtualMachines/jdk-17.jdk`），
+1. **Settings → Build, Execution, Deployment → Build Tools → Gradle → Gradle JDK 必须选择 17**：
+   - 下拉选择本机 JDK 17（Windows：`D:\karl_word\java\jdk\17`；
+     macOS：`/Library/Java/JavaVirtualMachines/jdk-17.jdk`），
      或在下拉中点 Download JDK → JetBrains Runtime 17
    - 该工程已实测：AS 内置 JBR25 会导致 Gradle 崩溃（`JavaVersion.parse 25.0.3` 报错）
-2. SDK Manager 安装：**NDK (Side by side) 27.2.12479018**、**CMake 3.22.1**、
-   **Android SDK Platform 37（revision 2）**（Sync 时接受 license 可自动安装）
-3. Sync Project，执行 `./gradlew :app:assembleDebug`
+2. Use Gradle from 可选 Specified location（`D:\karl_word\java\gradle\8.14.3\gradle-8.14.3`），
+   `.idea/gradle.xml` 已按此配置
+3. SDK Manager 安装：**NDK (Side by side) 27.2.12479018**、**CMake 3.22.1**、
+   **Android SDK Platform 37（revision 2）**（Sync 时接受 license 可自动安装；
+   也可用 `sdkmanager "ndk;27.2.12479018" "cmake;3.22.1"` 命令行安装）
+4. Sync Project，执行 `pwsh scripts/build.ps1`
 
-命令行构建（本机路径已固化，推荐直接用脚本）：
+命令行构建（路径已固化在脚本中，推荐直接用脚本）：
 
-```bash
+```powershell
 # 脚本内固定：
-#   JDK    /Library/Java/JavaVirtualMachines/jdk-17.jdk/Contents/Home
-#   Gradle /Users/karl/Documents/java/gradle/8.14.3/gradle-8.14.3（不存在时回退 wrapper）
-#   SDK    /Users/karl/Library/Android/sdk（local.properties 已配置）
-bash scripts/build.sh                 # assembleDebug
-bash scripts/build.sh installDebug    # 安装到车机/设备
+#   JDK    D:\karl_word\java\jdk\17
+#   Gradle D:\karl_word\java\gradle\8.14.3\gradle-8.14.3（不存在时回退 wrapper）
+#   SDK    C:\Users\karl\AppData\Local\Android\Sdk（local.properties 已配置）
+pwsh scripts/build.ps1                 # assembleDebug
+pwsh scripts/build.ps1 installDebug    # 安装到车机/设备
+pwsh scripts/build.ps1 clean           # 清理
 ```
 
-等价的手工命令：
+macOS 对应 `bash scripts/build.sh [任务]`。
 
-```bash
-export JAVA_HOME="/Library/Java/JavaVirtualMachines/jdk-17.jdk/Contents/Home"
-/Users/karl/Documents/java/gradle/8.14.3/gradle-8.14.3/bin/gradle :app:assembleDebug
+等价的手工命令（Windows PowerShell）：
+
+```powershell
+$env:JAVA_HOME = 'D:\karl_word\java\jdk\17'
+& 'D:\karl_word\java\gradle\8.14.3\gradle-8.14.3\bin\gradle.bat' :app:assembleDebug
 ```
 
 > 注意：`local.properties` 已被 `.gitignore` 忽略，换机时从 `local.properties.example`
-> 复制并修改 `sdk.dir`；`scripts/build.sh` 中路径为当前开发机配置，换机需同步修改。
+> 复制并修改 `sdk.dir`；`scripts/build.ps1`（Windows）/ `scripts/build.sh`（macOS）
+> 中路径为当前开发机配置，换机需同步修改。
 
-> 未执行 `setup-native.sh` 时工程同样可以编译：CMake 会构建 JNI stub 桩库，
+> 未执行 `setup-native` 脚本时工程同样可以编译：CMake 会构建 JNI stub 桩库，
 > 设备打开接口返回错误码 `-100`，便于先调试 UI/权限链路。
 
-## 3. 目录结构
+## 4. 目录结构
 
 ```
 android_camera/
@@ -75,7 +98,8 @@ android_camera/
 ├── gradle/libs.versions.toml        # 版本目录（统一依赖版本）
 ├── gradle/wrapper/                  # Gradle 8.14.3 wrapper
 ├── scripts/
-│   └── setup-native.sh              # 拉取 libuvc/libusb 源码
+│   ├── setup-native.ps1 / .sh       # 拉取 libuvc/libusb 源码（Windows/macOS）
+│   └── build.ps1 / build.sh         # 固定 JDK17 + 本地 Gradle 的一键构建
 └── app/
     ├── build.gradle.kts
     └── src/main/
@@ -102,7 +126,7 @@ android_camera/
             └── util/                # 日志等
 ```
 
-## 4. 数据流（约束）
+## 5. 数据流（约束）
 
 ```
 libuvc streaming 线程
@@ -114,7 +138,7 @@ libuvc streaming 线程
 
 byte[] 走 `FramePool` 复用；UI 层不允许直接调用 NativeUvc / 持有 USB 句柄。
 
-## 5. 车机专属坑点预案
+## 6. 车机专属坑点预案
 
 | 坑点 | 处理 |
 |---|---|
@@ -123,8 +147,10 @@ byte[] 走 `FramePool` 复用；UI 层不允许直接调用 NativeUvc / 持有 U
 | 内核已绑 uvcvideo 驱动 | native 打开时 `libusb_set_auto_detach_kernel_driver` |
 | 存储权限碎片化 | 私有目录优先；≤28 旧权限 / 29~32 legacy / ≥33 READ_MEDIA_VIDEO（清单已守卫） |
 | 魔改 AOSP 行为差异 | 所有 USB/native 调用均有 try-catch 与错误码 |
+| 国内网络 `SSL peer shut down incorrectly`（AAPT2 拉取失败） | `settings.gradle.kts` 已配置阿里云 `public` + `google` 镜像并排在官方源前面；AAPT2（com.android.tools.build）只在 google 仓库，public 镜像不含，必须配 google 镜像 |
+| 点“申请权限”无弹窗、立即返回拒绝（结果 intent extras 为空） | **UVC 设备必须先授予 CAMERA 权限**。系统对 USB Video Class 设备做保护：无 CAMERA 时 `UsbManager.requestPermission` 不弹 `UsbPermissionActivity`、直接拒绝。Manifest 已声明 CAMERA + `camera.external` feature，MainActivity 进入即申请 CAMERA，授予后自动衔接 USB 授权弹窗（官方 External USB cameras 文档：直接访问 USB 的 webcam 应用必须和普通相机应用一样持有 CAMERA 权限） |
 
-## 6. 后续开发顺序
+## 7. 后续开发顺序
 
 2. USB 枚举与权限联调 → 3. 单路预览 Demo → 4. 双路分屏 →
 5. 镜像/翻转 → 6. 循环录像（MJPEG→AVI，预留 H.264）→

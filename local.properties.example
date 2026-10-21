@@ -1,3 +1,7 @@
 # 复制本文件为 local.properties（已被 .gitignore 忽略），按本机 SDK 路径修改
-# macOS 默认路径：
-sdk.dir=/Users/karl/Library/Android/sdk
+#
+# Windows（当前开发机）：
+sdk.dir=C\:\\Users\\karl\\AppData\\Local\\Android\\Sdk
+#
+# macOS（旧开发机，保留备查）：
+# sdk.dir=/Users/karl/Library/Android/sdk

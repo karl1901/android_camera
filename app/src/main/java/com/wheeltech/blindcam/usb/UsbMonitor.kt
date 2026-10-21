@@ -10,6 +10,8 @@ import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Build.VERSION_CODES
+import android.os.Handler
+import android.os.Looper
 import androidx.core.content.ContextCompat
 import com.wheeltech.blindcam.util.Logger
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -33,7 +35,16 @@ class UsbMonitor(private val context: Context) {
         private const val TAG = "usb"
         private const val ACTION_USB_PERMISSION =
             "com.wheeltech.blindcam.USB_PERMISSION"
+
+        /** 权限请求超时：部分魔改 ROM 会静默吞掉弹窗且不回调，超时后主动返回失败 */
+        private const val PERMISSION_TIMEOUT_MS = 12_000L
     }
+
+    /** 主线程 Handler，用于权限请求超时兜底 */
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    /** 每个设备当前的超时任务（deviceId -> Runnable） */
+    private val timeoutRunnables = java.util.concurrent.ConcurrentHashMap<Int, Runnable>()
 
     /** 热插拔事件 */
     sealed interface UsbEvent {
@@ -50,8 +61,9 @@ class UsbMonitor(private val context: Context) {
     private val _events = MutableSharedFlow<UsbEvent>(extraBufferCapacity = 8)
     val events: SharedFlow<UsbEvent> = _events.asSharedFlow()
 
-    /** 权限回调：deviceId 到 是否授权 */
-    private var permissionCallback: ((UsbDeviceInfo, Boolean) -> Unit)? = null
+    /** 权限回调：按 deviceId 存储，支持多路设备同时请求（单变量会被并发覆盖） */
+    private val permissionCallbacks =
+        java.util.concurrent.ConcurrentHashMap<Int, (UsbDeviceInfo, Boolean) -> Unit>()
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: Intent?) {
@@ -74,6 +86,12 @@ class UsbMonitor(private val context: Context) {
                     }
                 }
                 ACTION_USB_PERMISSION -> {
+                    // 打印系统返回 intent 的全部 extras，定位无弹窗/device=null 原因
+                    val extrasDesc = intent.extras?.let { b ->
+                        b.keySet().joinToString { k -> "$k=${b.get(k)}" }
+                    } ?: "null"
+                    Logger.i(TAG, "permission intent: action=${intent.action} extras=[$extrasDesc]")
+
                     val device = intent.getParcelableDeviceExtra()
                     val granted = intent.getBooleanExtra(
                         UsbManager.EXTRA_PERMISSION_GRANTED, false
@@ -81,9 +99,14 @@ class UsbMonitor(private val context: Context) {
                     Logger.i(TAG, "permission result: granted=$granted device=${device?.deviceName}")
                     refresh()
                     if (device != null) {
-                        permissionCallback?.invoke(toInfo(device), granted)
+                        dispatchPermissionResult(device.deviceId, toInfo(device), granted)
+                    } else {
+                        // 系统未回传设备对象（直接拒绝）：用当前列表里仍未授权的设备兜底
+                        val fallback = _devices.value.firstOrNull { !it.hasPermission }
+                        if (fallback != null) {
+                            dispatchPermissionResult(fallback.deviceId, fallback, false)
+                        }
                     }
-                    permissionCallback = null
                 }
             }
         }
@@ -119,7 +142,23 @@ class UsbMonitor(private val context: Context) {
     /** 注销广播（onStop/onDestroy 时调用） */
     fun unregister() {
         runCatching { context.unregisterReceiver(usbReceiver) }
-        permissionCallback = null
+        // 清理所有等待中的回调与超时任务
+        timeoutRunnables.forEach { (id, r) -> mainHandler.removeCallbacks(r) }
+        timeoutRunnables.clear()
+        permissionCallbacks.clear()
+    }
+
+    /**
+     * 统一分发权限结果：移除超时任务并调用对应设备的回调。
+     * 每个回调保证只被调用一次（广播结果或超时，先到者生效）。
+     */
+    private fun dispatchPermissionResult(
+        deviceId: Int,
+        info: UsbDeviceInfo,
+        granted: Boolean
+    ) {
+        timeoutRunnables.remove(deviceId)?.let { mainHandler.removeCallbacks(it) }
+        permissionCallbacks.remove(deviceId)?.invoke(info, granted)
     }
 
     /** 重新枚举当前所有 USB 设备 */
@@ -148,8 +187,21 @@ class UsbMonitor(private val context: Context) {
             callback(device, true)
             return true
         }
-        permissionCallback = callback
+
+        // 注册回调（覆盖同设备旧的等待项，先清理旧的超时）
+        timeoutRunnables.remove(device.deviceId)?.let { mainHandler.removeCallbacks(it) }
+        permissionCallbacks[device.deviceId] = callback
+
+        // 超时兜底：ROM 静默吞掉弹窗/不回调时，12 秒后主动返回失败
+        val timeout = Runnable {
+            Logger.w(TAG, "permission request timeout deviceId=${device.deviceId}")
+            dispatchPermissionResult(device.deviceId, device, false)
+        }
+        timeoutRunnables[device.deviceId] = timeout
+        mainHandler.postDelayed(timeout, PERMISSION_TIMEOUT_MS)
+
         val intent = Intent(ACTION_USB_PERMISSION).apply {
+            // 显式限定本应用，配合 RECEIVER_NOT_EXPORTED 注册
             setPackage(context.packageName)
         }
         val flags = if (Build.VERSION.SDK_INT >= VERSION_CODES.S) {
@@ -164,8 +216,7 @@ class UsbMonitor(private val context: Context) {
             manager.requestPermission(device.rawDevice, pendingIntent)
         }.onFailure {
             Logger.e(TAG, "requestPermission failed", it)
-            permissionCallback = null
-            callback(device, false)
+            dispatchPermissionResult(device.deviceId, device, false)
         }
         return false
     }

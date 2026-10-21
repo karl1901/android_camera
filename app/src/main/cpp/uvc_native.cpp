@@ -33,10 +33,32 @@
 
 static JavaVM *g_vm = nullptr;
 
+// 诊断文件完整路径（由 Kotlin 传入 getExternalFilesDir 路径），供 libuvc 内
+// uvc_diag 写文件使用（绕过 vivo 不输出 app logcat 的限制）
+char g_diag_path[512] = {0};
+
+#if UVC_HAVE_LIBUVC
+#include <cstdio>
+#include <cstdarg>
+static void native_diag(const char *fmt, ...) {
+    if (g_diag_path[0] == 0) return;
+    FILE *fp = fopen(g_diag_path, "a");
+    if (!fp) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(fp, fmt, ap);
+    va_end(ap);
+    fputc('\n', fp);
+    fclose(fp);
+}
+#endif
+
 // 每一路摄像头一个会话
 struct UvcSession {
     int cameraId = -1;
     jobject callbackGlobalRef = nullptr;   // FrameCallback 的全局引用
+    jclass callbackIfaceClass = nullptr;  // FrameCallback 接口类全局引用
+    jmethodID onFrameMid = nullptr;       // 接口 onFrame 方法 ID
 #if UVC_HAVE_LIBUVC
     uvc_context_t       *ctx = nullptr;   // 不持有所有权（归 NativeUvc 上下文）
     uvc_device_t        *dev = nullptr;
@@ -99,13 +121,30 @@ static void detachJniEnv(bool attached) {
 // 只做一次 JNI 拷贝，把 MJPEG 字节透传给 Kotlin
 // ---------------------------------------------------------------------------
 static void onUvcFrame(uvc_frame_t *frame, void *userPtr) {
+    static int s_frameCount = 0;
     auto *session = static_cast<UvcSession *>(userPtr);
     if (!session || !session->callbackGlobalRef || !frame || frame->data_bytes == 0) {
         return;
     }
+    s_frameCount++;
+    if (s_frameCount <= 5 || s_frameCount % 60 == 0) {
+        const uint8_t *d = (const uint8_t*)frame->data;
+        native_diag("FRAME #%d bytes=%zu %dx%d fmt=%d head=%02X %02X %02X %02X tail=%02X %02X",
+             s_frameCount, (size_t)frame->data_bytes, frame->width,
+             frame->height, frame->frame_format,
+             frame->data_bytes > 0 ? d[0] : 0,
+             frame->data_bytes > 1 ? d[1] : 0,
+             frame->data_bytes > 2 ? d[2] : 0,
+             frame->data_bytes > 3 ? d[3] : 0,
+             frame->data_bytes > 1 ? d[frame->data_bytes-2] : 0,
+             frame->data_bytes > 0 ? d[frame->data_bytes-1] : 0);
+    }
     bool attached = false;
     JNIEnv *env = attachJniEnv(&attached);
-    if (!env) return;
+    if (!env) {
+        if (s_frameCount <= 3) native_diag("attachJniEnv FAILED");
+        return;
+    }
 
     jbyteArray byteArray = env->NewByteArray(static_cast<jsize>(frame->data_bytes));
     if (byteArray) {
@@ -113,21 +152,23 @@ static void onUvcFrame(uvc_frame_t *frame, void *userPtr) {
                 byteArray, 0, static_cast<jsize>(frame->data_bytes),
                 reinterpret_cast<const jbyte *>(frame->data));
 
-        jclass cbClass = env->GetObjectClass(session->callbackGlobalRef);
-        // onFrame(int cameraId, byte[] data, int width, int height, int frameFormat)
-        jmethodID mid = env->GetMethodID(
-                cbClass, "onFrame", "(I[BIIII)V");
-        if (mid) {
+        // 使用 nativeStartStream 中缓存的接口类与方法 ID（native 线程
+        // FindClass 无法解析 app 类）。CallVoidMethod 按实际对象多态分发。
+        if (s_frameCount <= 3)
+            native_diag("JNI use cached cls=%p mid=%p attached=%d",
+                        session->callbackIfaceClass, session->onFrameMid, attached);
+        if (session->onFrameMid) {
             env->CallVoidMethod(
-                    session->callbackGlobalRef, mid,
+                    session->callbackGlobalRef, session->onFrameMid,
                     static_cast<jint>(session->cameraId),
                     byteArray,
                     static_cast<jint>(frame->width),
                     static_cast<jint>(frame->height),
                     static_cast<jint>(frame->frame_format));
         }
-        env->DeleteLocalRef(cbClass);
         env->DeleteLocalRef(byteArray);
+    } else if (s_frameCount <= 3) {
+        native_diag("NewByteArray FAILED");
     }
 
     if (env->ExceptionCheck()) {
@@ -154,10 +195,24 @@ Java_com_wheeltech_blindcam_native_NativeUvc_nativeIsBackendAvailable(JNIEnv *, 
 
 extern "C"
 JNIEXPORT jlong JNICALL
-Java_com_wheeltech_blindcam_native_NativeUvc_nativeInit(JNIEnv *env, jobject) {
+Java_com_wheeltech_blindcam_native_NativeUvc_nativeInit(JNIEnv *env, jobject, jstring diagPath) {
     auto *context = new (std::nothrow) UvcContext();
     if (!context) return 0;
+    if (diagPath != nullptr) {
+        const char *path = env->GetStringUTFChars(diagPath, nullptr);
+        if (path) {
+            std::strncpy(g_diag_path, path, sizeof(g_diag_path) - 1);
+            env->ReleaseStringUTFChars(diagPath, path);
+        }
+    }
 #if UVC_HAVE_LIBUVC
+    // Android 上 app 无权 opendir("/dev/bus/usb")（EACCES）。我们通过
+    // UsbDeviceConnection 的 fd 直接 uvc_wrap 打开已授权设备，不需要 libusb
+    // 枚举/扫描设备，因此设置全局选项 NO_DEVICE_DISCOVERY 跳过初始扫描，
+    // 否则 libusb_init 会因扫描失败返回 -1。
+    libusb_set_option(nullptr, LIBUSB_OPTION_NO_DEVICE_DISCOVERY);
+    libusb_set_option(nullptr, LIBUSB_OPTION_LOG_LEVEL, LIBUSB_LOG_LEVEL_DEBUG);
+
     uvc_error_t err = uvc_init(&context->ctx, nullptr);
     if (err != UVC_SUCCESS || !context->ctx) {
         LOGE("uvc_init failed: %d", err);
@@ -217,6 +272,15 @@ Java_com_wheeltech_blindcam_native_NativeUvc_nativeOpenFd(
     libusb_device_handle *usbHandle = uvc_get_libusb_handle(session->devh);
     if (usbHandle) {
         libusb_set_auto_detach_kernel_driver(usbHandle, 1);
+        libusb_device *ldev = libusb_get_device(usbHandle);
+        if (ldev) {
+            int spd = libusb_get_device_speed(ldev);
+            struct libusb_device_descriptor dd;
+            if (libusb_get_device_descriptor(ldev, &dd) == 0) {
+                native_diag("speed=%d(1=full,2=high,3=super) bcdUSB=%x bcdDevice=%x bNumConfigurations=%d",
+                              spd, dd.bcdUSB, dd.bcdDevice, dd.bNumConfigurations);
+            }
+        }
     }
 
     LOGI("uvc open ok: cameraId=%d %04x:%04x", cameraId, vid, pid);
@@ -247,6 +311,10 @@ Java_com_wheeltech_blindcam_native_NativeUvc_nativeClose(JNIEnv *env, jobject, j
         env->DeleteGlobalRef(session->callbackGlobalRef);
         session->callbackGlobalRef = nullptr;
     }
+    if (session->callbackIfaceClass) {
+        env->DeleteGlobalRef(session->callbackIfaceClass);
+        session->callbackIfaceClass = nullptr;
+    }
     delete session;
 }
 
@@ -261,6 +329,22 @@ Java_com_wheeltech_blindcam_native_NativeUvc_nativeStartStream(
     // 保存回调全局引用
     session->callbackGlobalRef = env->NewGlobalRef(callback);
     if (!session->callbackGlobalRef) return -2;
+
+    // 在 app 线程（持有正确 ClassLoader）解析 FrameCallback 接口类与 onFrame，
+    // 缓存为全局引用，供 native 回调线程使用（native 线程 FindClass 会失败）。
+    jclass ifaceClass = env->FindClass(
+        "com/wheeltech/blindcam/native/NativeUvc$FrameCallback");
+    if (ifaceClass) {
+        session->callbackIfaceClass = (jclass)env->NewGlobalRef(ifaceClass);
+        session->onFrameMid = env->GetMethodID(
+            ifaceClass, "onFrame", "(I[BIII)V");
+        env->DeleteLocalRef(ifaceClass);
+    }
+    if (!session->callbackIfaceClass || !session->onFrameMid) {
+        native_diag("resolve callback iface failed cls=%p mid=%p",
+                    session->callbackIfaceClass, session->onFrameMid);
+        return -2;
+    }
 
 #if UVC_HAVE_LIBUVC
     // 请求 MJPEG 格式；libuvc 会在协商失败时返回错误（后续可做格式回退枚举）

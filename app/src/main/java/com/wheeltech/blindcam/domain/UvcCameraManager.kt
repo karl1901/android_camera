@@ -26,8 +26,8 @@ class UvcCameraManager private constructor(context: Context) {
         const val SLOT_COUNT = 2
 
         /** 默认取流参数（AHD 转 UVC 解码盒常见 1080p30 MJPEG；后续按能力协商） */
-        const val DEFAULT_WIDTH = 1920
-        const val DEFAULT_HEIGHT = 1080
+        const val DEFAULT_WIDTH = 640
+        const val DEFAULT_HEIGHT = 480
         const val DEFAULT_FPS = 30
 
         @Volatile
@@ -73,7 +73,10 @@ class UvcCameraManager private constructor(context: Context) {
         if (!NativeUvc.loaded) {
             Logger.w(TAG, "native 库未加载，设备打开功能不可用")
         }
-        nativeCtx = NativeUvc.nativeInit()
+        // getExternalFilesDir 会创建 app 可直接读写的外部私有目录，无需存储权限
+        val diagDir = appContext.getExternalFilesDir(null)
+        val diagPath = java.io.File(diagDir, "diag.txt").absolutePath
+        nativeCtx = NativeUvc.nativeInit(diagPath)
         Logger.i(TAG, "native context = $nativeCtx")
     }
 

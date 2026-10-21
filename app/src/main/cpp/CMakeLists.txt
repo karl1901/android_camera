@@ -31,7 +31,8 @@ if(EXISTS ${THIRD_PARTY_DIR}/libuvc AND EXISTS ${THIRD_PARTY_DIR}/libusb)
     message(STATUS "UVC: libuvc + libusb found, building native backend")
 else()
     set(UVC_HAVE_LIBUVC 0)
-    message(WARNING "UVC: third_party 缺失，正在编译 JNI stub 桩库。请执行 scripts/setup-native.sh 拉取 libusb/libuvc 源码")
+    # 用英文输出，避免 Windows 控制台 GBK/UTF-8 编码不一致导致乱码
+    message(WARNING "UVC: third_party missing - building JNI stub. Run scripts/setup-native.ps1 (Windows) or scripts/setup-native.sh (macOS) to fetch libusb/libuvc sources")
 endif()
 
 add_library(uvc_native SHARED

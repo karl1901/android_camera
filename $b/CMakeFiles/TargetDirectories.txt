@@ -1,0 +1,5 @@
+D:/karl_word/code.github/android_camera/$b/CMakeFiles/usb_static.dir
+D:/karl_word/code.github/android_camera/$b/CMakeFiles/uvc_static.dir
+D:/karl_word/code.github/android_camera/$b/CMakeFiles/uvc_native.dir
+D:/karl_word/code.github/android_camera/$b/CMakeFiles/edit_cache.dir
+D:/karl_word/code.github/android_camera/$b/CMakeFiles/rebuild_cache.dir

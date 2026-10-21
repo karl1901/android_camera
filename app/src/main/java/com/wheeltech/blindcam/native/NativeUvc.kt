@@ -41,8 +41,8 @@ object NativeUvc {
         fun onFrame(cameraId: Int, data: ByteArray, width: Int, height: Int, frameFormat: Int)
     }
 
-    /** 创建 uvc_context，返回上下文句柄；0 表示失败 */
-    external fun nativeInit(): Long
+    /** 创建 uvc_context，返回上下文句柄；0 表示失败。diagPath 为诊断文件完整路径 */
+    external fun nativeInit(diagPath: String): Long
 
     /** 释放 uvc_context */
     external fun nativeRelease(ctxHandle: Long)

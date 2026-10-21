@@ -8,6 +8,23 @@
         android:name="android.hardware.usb.host"
         android:required="false" />
 
+    <!--
+      ============ CAMERA（UVC 设备的硬性要求） ============
+      从 Android 较新版本起，系统对 USB Video Class(UVC) 设备做了保护：
+      调用 UsbManager.requestPermission 时若未持有 CAMERA 权限，
+      系统不弹授权框、立即返回拒绝（结果 intent 的 extras 为空）。
+      官方 External USB cameras 文档明确：直接访问 USB 设备的 webcam 应用
+      必须和普通相机应用一样持有 CAMERA 权限。
+    -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- 外接 USB 摄像头；required=false 保证无摄像头设备（部分车机）也能安装 -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.camera.external"
+        android:required="false" />
+
     <!-- ============ 前台服务（后台保活） ============ -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <!-- targetSdk=33：使用 connectedDevice 类型；该权限在 API34 引入，声明在低版本系统上无效但无害 -->

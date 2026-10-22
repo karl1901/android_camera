@@ -121,8 +121,15 @@ class UsbMonitor(private val context: Context) {
         }
     }
 
-    /** 注册广播（onStart/onCreate 时调用） */
+    /** 注册状态守卫，保证 Activity / Service 多处调用 register 幂等 */
+    private val registered = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** 注册广播（onStart/onCreate 时调用，幂等） */
     fun register() {
+        if (!registered.compareAndSet(false, true)) {
+            refresh()
+            return
+        }
         val filter = IntentFilter().apply {
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
@@ -139,8 +146,9 @@ class UsbMonitor(private val context: Context) {
         refresh()
     }
 
-    /** 注销广播（onStop/onDestroy 时调用） */
+    /** 注销广播（幂等） */
     fun unregister() {
+        if (!registered.compareAndSet(true, false)) return
         runCatching { context.unregisterReceiver(usbReceiver) }
         // 清理所有等待中的回调与超时任务
         timeoutRunnables.forEach { (id, r) -> mainHandler.removeCallbacks(r) }

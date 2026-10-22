@@ -17,11 +17,11 @@ import com.wheeltech.blindcam.util.Logger
 
 /**
  * 前台保活服务：
- * - 切导航 / 后台时维持 USB 取流与循环录像（USB 流与录像线程挂在 Domain 层）
+ * - 切到后台 / 导航时维持 USB 取流与录像（设备与流挂在 Domain 层单例，
+ *   不随 Activity 销毁）
+ * - 同时接管 USB 热插拔监听注册，使后台也能响应设备插入
  * - targetSdk=33：foregroundServiceType=connectedDevice，
  *   不使用 camera 类型（避免强制 CAMERA 权限）
- * - Android 13+ 对前台服务的额外限制在 targetSdk33 下不会触发，
- *   所有高版本 API 均加版本守卫
  */
 class UvcForegroundService : Service() {
 
@@ -34,24 +34,18 @@ class UvcForegroundService : Service() {
         const val ACTION_STOP = "com.wheeltech.blindcam.action.STOP"
 
         fun start(context: Context) {
-            val intent = Intent(context, UvcForegroundService::class.java)
-                .setAction(ACTION_START)
-            ContextCompatStart(context, intent)
-        }
-
-        fun stop(context: Context) {
-            context.startService(
-                Intent(context, UvcForegroundService::class.java)
-                    .setAction(ACTION_STOP)
-            )
-        }
-
-        private fun ContextCompatStart(context: Context, intent: Intent) {
+            val intent = Intent(context, UvcForegroundService::class.java).setAction(ACTION_START)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
             } else {
                 context.startService(intent)
             }
+        }
+
+        fun stop(context: Context) {
+            context.startService(
+                Intent(context, UvcForegroundService::class.java).setAction(ACTION_STOP)
+            )
         }
     }
 
@@ -95,13 +89,11 @@ class UvcForegroundService : Service() {
         } else {
             ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, 0)
         }
-        Logger.i(TAG, "foreground service started")
 
-        // TODO(阶段7): 启动后确保 UvcCameraManager 已在取流、CircularRecorder 已录像
+        // 后台也能响应 USB 热插拔（register 幂等）
         val manager = (application as? UvcApp)?.cameraManager
-        manager?.let {
-            Logger.i(TAG, "attached to UvcCameraManager, cameras=${it.devices.value.size}")
-        }
+        runCatching { manager?.registerUsbMonitor() }
+        Logger.i(TAG, "foreground service started, cameras=${manager?.devices?.value?.size}")
     }
 
     private fun createChannel() {
@@ -114,13 +106,14 @@ class UvcForegroundService : Service() {
                 description = getString(R.string.channel_desc)
                 setShowBadge(false)
             }
-            val nm = getSystemService(NotificationManager::class.java)
-            nm?.createNotificationChannel(channel)
+            getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
         }
     }
 
     override fun onDestroy() {
         Logger.i(TAG, "service onDestroy")
+        // 注意：此处不关闭摄像头，便于系统短暂回收后 START_STICKY 快速恢复；
+        // 设备句柄由 Domain 单例持有，进程彻底结束时自然释放。
         super.onDestroy()
     }
 }

@@ -1,19 +1,26 @@
 package com.wheeltech.blindcam.render
 
+import android.os.Handler
+import android.os.HandlerThread
 import com.wheeltech.blindcam.domain.CameraFrame
+import com.wheeltech.blindcam.domain.FramePool
 import com.wheeltech.blindcam.domain.UvcCameraManager
 import com.wheeltech.blindcam.util.Logger
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * 渲染总控（render 模块）：
  * - 实现 [UvcCameraManager.FrameListener]，在 native 帧回调线程上被调用
- * - 按 cameraId(slot) 把帧路由到对应槽位的 [PreviewRenderer]
- * - 负责 MJPEG 解码、Bitmap 回收、帧数组归还
+ * - 按 cameraId(slot) 把帧路由到对应槽位的工作线程
  *
- * 线程说明：
- * - onFrame 在 libuvc streaming 线程执行；MjpegDecoder.decode 是本链路唯一
- *   允许的耗时操作（单帧 JPEG 解码），渲染器内部自带丢帧保护
- * - 不在回调内做任何 View 层级操作 / 锁等待
+ * 关键：native 每路的 byte[] 会被下一帧复用/覆盖，所以在 onFrame（native 线程）
+ * 内必须立即把数据拷贝到本类自有的缓冲（[FramePool]），再异步解码渲染。
+ *
+ * 线程模型：
+ * - onFrame 运行在 libuvc 回调线程，只做一次 memcpy 投递，立即返回
+ * - 每个槽位一个独立 [HandlerThread]，串行执行 MJPEG 解码 + Canvas 绘制
+ * - 工作线程忙时新帧覆盖旧帧（旧缓冲归还对象池），天然丢帧，不堆积
  *
  * @param renderers 槽位(0=左 1=右)到渲染器的映射
  */
@@ -25,56 +32,85 @@ class PreviewController(
         private const val TAG = "preview-ctrl"
     }
 
+    /** 待处理的一帧：拷贝后的字节缓冲 + 有效长度 */
+    private class Pending(val buffer: ByteArray, val length: Int)
+
+    /** 单个槽位的异步渲染工作器 */
+    private inner class SlotWorker(
+        private val slot: Int,
+        private val renderer: PreviewRenderer
+    ) {
+        private val thread = HandlerThread("render-$slot").apply { start() }
+        private val handler = Handler(thread.looper)
+        private val pending = AtomicReference<Pending?>(null)
+        private val scheduled = AtomicBoolean(false)
+
+        /** native 线程调用：立即拷贝帧数据并投递；旧缓冲归还池 */
+        fun submit(frame: CameraFrame) {
+            // 关键：这里同步拷贝 native 复用数组，回调返回后数据才安全
+            val buffer = framePool.acquire(frame.data.size)
+            System.arraycopy(frame.data, 0, buffer, 0, frame.data.size)
+            val item = Pending(buffer, frame.data.size)
+            val old = pending.getAndSet(item)
+            old?.let { framePool.recycle(it.buffer) }
+            if (scheduled.compareAndSet(false, true)) {
+                handler.post { process() }
+            }
+        }
+
+        private fun process() {
+            val item = pending.getAndSet(null)
+            try {
+                if (item != null) {
+                    val bitmap = MjpegDecoder.decode(item.buffer, 0, item.length)
+                    if (bitmap != null) {
+                        renderer.submitBitmap(bitmap)
+                        bitmap.recycle()
+                    }
+                    framePool.recycle(item.buffer)
+                }
+            } catch (t: Throwable) {
+                Logger.w(TAG, "render slot=$slot failed: ${t.message}")
+                item?.let { runCatching { framePool.recycle(it.buffer) } }
+            } finally {
+                scheduled.set(false)
+                // 处理期间又有新帧到达，立即再调度
+                if (pending.get() != null && scheduled.compareAndSet(false, true)) {
+                    handler.post { process() }
+                }
+            }
+        }
+
+        fun shutdown() {
+            thread.quitSafely()
+        }
+    }
+
+    /** 渲染拷贝缓冲复用池（所有槽位共用，严格上限防泄漏） */
+    private val framePool = FramePool()
+
+    private val workers: Map<Int, SlotWorker> = renderers.map { (slot, renderer) ->
+        slot to SlotWorker(slot, renderer)
+    }.toMap()
+
     /** 注册到管理器，开始接收帧 */
     fun start(manager: UvcCameraManager) = manager.addFrameListener(this)
 
     /** 从管理器注销，停止接收帧 */
     fun stop(manager: UvcCameraManager) = manager.removeFrameListener(this)
 
-    private var rcvCount = 0
-    private var decOk = 0
-    private var decFail = 0
-
-    private fun renderDiag(msg: String) {
-        try {
-            val p = java.io.File("/sdcard/Android/data/com.wheeltech.blindcam/files/render_diag.txt")
-            p.appendText(msg + "\n")
-        } catch (_: Throwable) {}
+    override fun onFrame(frame: CameraFrame) {
+        val worker = workers[frame.cameraId]
+        if (worker == null) {
+            // 没有对应槽位，直接丢弃
+            return
+        }
+        worker.submit(frame)
     }
 
-    override fun onFrame(frame: CameraFrame) {
-        // 最前面无条件心跳，确认是否被调用
-        rcvCount++
-        if (rcvCount == 1) renderDiag("onFrame FIRST cameraId=${frame.cameraId} dataLen=${frame.data.size}")
-        // 帧必须最终归还数组（try/finally 保证，异常路径也回收）
-        try {
-            val renderer = renderers[frame.cameraId]
-            if (renderer == null) {
-                // 没有对应槽位（如只显示单路），直接丢弃
-                if (rcvCount <= 3) renderDiag("no renderer for cameraId=${frame.cameraId}")
-                return
-            }
-            // 仅处理 MJPEG 帧；后续扩展 H.264 时在此分发
-            val bitmap = MjpegDecoder.decode(frame.data)
-            if (bitmap != null) {
-                decOk++
-                // submitBitmap 内部 lockCanvas→draw→unlock 在当前线程同步完成，
-                // 返回后 Bitmap 已不再被使用，立即回收，避免逐帧累积导致 OOM
-                renderer.submitBitmap(bitmap)
-                bitmap.recycle()
-            } else {
-                decFail++
-                if (decFail <= 3)
-                    renderDiag("decode FAIL rcv=$rcvCount dataLen=${frame.data.size} head=${frame.data.take(4).joinToString(" ") { "%02X".format(it) }}")
-            }
-            if (rcvCount % 30 == 0)
-                renderDiag("stats rcv=$rcvCount decOk=$decOk decFail=$decFail")
-        } catch (t: Throwable) {
-            // 渲染/解码异常不允许打断 native 取流线程
-            Logger.w(TAG, "onFrame render failed: ${t.message}")
-            renderDiag("EXC: ${t.message}")
-        } finally {
-            frame.recycle()
-        }
+    /** 释放工作线程（Activity 销毁时） */
+    fun shutdown() {
+        workers.values.forEach { it.shutdown() }
+        framePool.clear()
     }
 }

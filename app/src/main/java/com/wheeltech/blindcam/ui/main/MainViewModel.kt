@@ -5,205 +5,369 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.wheeltech.blindcam.UvcApp
 import com.wheeltech.blindcam.data.AppSettings
+import com.wheeltech.blindcam.domain.StreamProfile
 import com.wheeltech.blindcam.domain.UvcCameraManager
 import com.wheeltech.blindcam.usb.UsbDeviceInfo
 import com.wheeltech.blindcam.usb.UsbMonitor
+import com.wheeltech.blindcam.util.Logger
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
-/**
- * 主界面 ViewModel：只做 UI 状态聚合，不碰 JNI / USB 句柄。
- */
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
-    data class UiState(
-        val statusText: String = "USB 初始化中…",
-        val devices: List<UsbDeviceInfo> = emptyList(),
-        val layoutMode: AppSettings.LayoutMode = AppSettings.LayoutMode.DUAL,
-        val logLine: String = ""
+    private val appContainer: UvcApp = app as UvcApp
+    private val cameraManager: UvcCameraManager = appContainer.cameraManager
+    private val captureManager = appContainer.captureManager
+    private val settingsRepository = appContainer.settingsRepository
+
+    data class SlotState(
+        val slot: Int,
+        val device: UsbDeviceInfo? = null,
+        val capabilities: List<StreamProfile> = emptyList(),
+        val activeProfile: StreamProfile? = null,
+        val streaming: Boolean = false,
+        val recording: Boolean = false
     )
 
-    private val application = app as UvcApp
-    private val manager = application.cameraManager
+    data class UiState(
+        val slots: List<SlotState> = List(UvcCameraManager.SLOT_COUNT) { SlotState(it) },
+        val unassignedDevices: List<UsbDeviceInfo> = emptyList(),
+        val layoutMode: AppSettings.LayoutMode = AppSettings.LayoutMode.DUAL,
+        val statusText: String = "初始化中…"
+    )
 
-    private val logLine = MutableStateFlow("")
-    private val layoutMode = MutableStateFlow(AppSettings.LayoutMode.DUAL)
+    private val _uiState = MutableStateFlow(UiState())
+    val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
-    val uiState: StateFlow<UiState> = combine(
-        manager.devices,
-        layoutMode,
-        logLine
-    ) { devices, layout, log ->
-        UiState(
-            statusText = if (devices.isEmpty()) {
-                "未检测到 USB 设备（共 ${devices.size} 路）"
-            } else {
-                "检测到 ${devices.size} 个 USB 设备"
-            },
-            devices = devices,
-            layoutMode = layout,
-            logLine = log
-        )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(2000), UiState())
+    /** 一次性提示（Toast / 结果） */
+    private val _events = MutableSharedFlow<String>(extraBufferCapacity = 16)
+    val events: SharedFlow<String> = _events.asSharedFlow()
 
-    /** 设置流（设置页直接使用，主界面这里先取布局模式） */
-    init {
+    private val deviceOpMutex = Mutex()
+    private var startTriggered = false
+
+    /** 开始预览（USB 设备打开/协商由 Domain 完成，重试由重试策略保障） */
+    fun ensurePreviewing() {
+        if (startTriggered) return
+        startTriggered = true
+        Logger.i(TAG, "ensurePreviewing: initial")
         viewModelScope.launch {
-            application.settingsRepository.settings.collect { s ->
-                layoutMode.value = s.layoutMode
+            deviceOpMutex.withLock {
+                if (cameraManager.devices.value.none { it.hasPermission }) {
+                    _uiState.update { it.copy(statusText = "未检测到授权设备") }
+                }
+                // 自动分配（含未授权提示）+ 开流，统一在 startStreamWithRetry
+                startStreamWithRetry()
             }
         }
-        // 透传热插拔事件到日志；插入后自动发起权限弹窗
+        observeUsbEvents()
+    }
+
+    /**
+     * 从后台返回 / onResume 时调用：检查各槽位，缺流的自动恢复。
+     * 设备在后台时 native 流可能被系统挂起，回到前台需重新协商。
+     */
+    fun resumePreviewing() {
         viewModelScope.launch {
-            manager.usbEvents.collect { event ->
+            deviceOpMutex.withLock { startStreamWithRetry() }
+        }
+    }
+
+    /** 主动刷新 USB 设备列表 */
+    fun refreshDevices() {
+        cameraManager.refreshDevices()
+        viewModelScope.launch {
+            deviceOpMutex.withLock { startStreamWithRetry() }
+        }
+    }
+
+    /** 收集热插拔事件，重新同步 UI；新插入设备自动请求权限并分配 */
+    private fun observeUsbEvents() {
+        viewModelScope.launch {
+            cameraManager.usbEvents.collect { event ->
+                Logger.i(TAG, "usb event: $event")
                 when (event) {
                     is UsbMonitor.UsbEvent.Attached -> {
-                        log("设备插入：${event.device.displayText}")
-                        // 自动申请：未授权则立即弹系统权限框（车机场景即插即用），
-                        // 授权后由 onPermissionResult 自动开流
-                        if (!event.device.hasPermission) {
-                            log("正在请求 USB 权限：${event.device.displayText}")
-                            manager.requestPermission(event.device, ::onPermissionResult)
+                        val device = event.device
+                        if (!device.hasPermission) {
+                            _uiState.update { it.copy(statusText = "等待授权：${device.displayText}") }
+                            val granted = withContext(Dispatchers.IO) {
+                                cameraManager.requestPermission(device)
+                            }
+                            if (!granted) {
+                                syncUiState()
+                                emit("未授权：${device.displayText}")
+                                return@collect
+                            }
+                        }
+                        deviceOpMutex.withLock {
+                            // 自动分配到空槽位并开流（重开失败由重试策略兜底）
+                            if (cameraManager.findDeviceSlot(device.deviceId) < 0) {
+                                val freeSlot = findFreeSlot()
+                                if (freeSlot >= 0) {
+                                    assignDeviceToSlot(freeSlot, device)
+                                }
+                            }
+                            startStreamWithRetry()
                         }
                     }
-                    is UsbMonitor.UsbEvent.Detached ->
-                        log("设备拔出：deviceId=${event.deviceId}")
+                    is UsbMonitor.UsbEvent.Detached -> {
+                        deviceOpMutex.withLock { syncUiState() }
+                    }
                 }
             }
         }
     }
 
-    fun refreshDevices() {
-        manager.refreshDevices()
-        log("已重新枚举 USB 设备")
-    }
-
-    /**
-     * 统一自检并确保预览（app 启动 / CAMERA 授予后调用）：
-     * - 已授权且未打开的设备：自动打开并开流
-     * - 已打开但未取流：启动取流
-     * - 未授权设备：发起 USB 权限请求
-     */
-    fun ensurePreviewing() {
-        val devices = manager.devices.value
-        for (device in devices) {
-            val occupied = findDeviceSlot(device.deviceId)
-            if (occupied >= 0) {
-                if (manager.getCamera(occupied)?.streaming != true) {
-                    startStream(occupied)
-                }
-            } else if (device.hasPermission) {
-                val freeSlot = firstFreeSlot()
-                if (freeSlot >= 0) openAndStream(freeSlot, device)
-            } else {
-                log("正在请求 USB 权限：${device.displayText}")
-                manager.requestPermission(device, ::onPermissionResult)
-            }
-        }
-    }
-
-    /** 申请列表中第一个未授权设备的权限（阶段1简化入口；阶段2按槽位绑定） */
-    fun requestFirstPermission() {
-        val target = manager.devices.value.firstOrNull { !it.hasPermission }
-        if (target == null) {
-            log("没有需要授权的设备")
-            return
-        }
-        log("正在请求 USB 权限：${target.displayText}")
-        manager.requestPermission(target, ::onPermissionResult)
-    }
-
-    fun requestPermission(device: UsbDeviceInfo) {
-        log("正在请求 USB 权限：${device.displayText}")
-        manager.requestPermission(device, ::onPermissionResult)
-    }
-
-    /**
-     * USB 权限结果统一处理：
-     * - 授予：自动分配到第一个空闲槽位，打开设备并启动取流
-     * - 拒绝：仅记录日志
-     */
-    private fun onPermissionResult(device: UsbDeviceInfo, granted: Boolean) {
-        if (!granted) {
-            log("USB 权限被拒绝：${device.displayText}")
-            return
-        }
-        log("USB 权限已授予：${device.displayText}")
-
-        // 该设备已在某槽位打开则不重复打开
-        val existingSlot = findDeviceSlot(device.deviceId)
-        if (existingSlot >= 0) {
-            // 确保该路在取流
-            if (manager.getCamera(existingSlot)?.streaming != true) {
-                startStream(existingSlot)
-            }
-            return
-        }
-
-        val freeSlot = firstFreeSlot()
-        if (freeSlot < 0) {
-            log("没有空闲槽位，无法打开：${device.displayText}")
-            return
-        }
-        openAndStream(freeSlot, device)
-    }
-
-    /** 打开设备到指定槽位并启动取流 */
-    private fun openAndStream(slot: Int, device: UsbDeviceInfo) {
-        val result = manager.openCamera(slot, device)
-        when (result) {
-            is UvcCameraManager.OpenResult.Success -> startStream(slot)
-            is UvcCameraManager.OpenResult.Failure ->
-                log("打开失败(slot=$slot)：${result.reason}")
-        }
-    }
-
-    private fun startStream(slot: Int) {
-        val ok = manager.startStream(
-            slot,
-            UvcCameraManager.DEFAULT_WIDTH,
-            UvcCameraManager.DEFAULT_HEIGHT,
-            UvcCameraManager.DEFAULT_FPS
-        )
-        log(if (ok) "预览已开启：slot=$slot" else "取流失败：slot=$slot")
-    }
-
-    /** 第一个空闲槽位（0=左 1=右），无空闲返回 -1 */
-    private fun firstFreeSlot(): Int {
+    private fun findFreeSlot(): Int {
         for (slot in 0 until UvcCameraManager.SLOT_COUNT) {
-            if (manager.getCamera(slot) == null) return slot
+            if (cameraManager.slotDevice(slot) == null) return slot
         }
         return -1
     }
 
-    /** 查找设备已占用的槽位，未找到返回 -1 */
-    private fun findDeviceSlot(deviceId: Int): Int {
-        for (slot in 0 until UvcCameraManager.SLOT_COUNT) {
-            if (manager.getCamera(slot)?.info?.deviceId == deviceId) return slot
-        }
-        return -1
-    }
-
-    /** 单/双屏循环切换：DUAL → LEFT_ONLY → RIGHT_ONLY → DUAL */
-    fun cycleLayoutMode() {
+    /**
+     * 把设备分配到指定槽位（若该槽位已被占用则先停止释放）。
+     * 若该设备已在其它槽位，会先从原槽位移除（实现左右自由调配）。
+     */
+    fun assignDevice(slot: Int, device: UsbDeviceInfo) {
         viewModelScope.launch {
-            val next = when (layoutMode.value) {
-                AppSettings.LayoutMode.DUAL -> AppSettings.LayoutMode.LEFT_ONLY
-                AppSettings.LayoutMode.LEFT_ONLY -> AppSettings.LayoutMode.RIGHT_ONLY
-                AppSettings.LayoutMode.RIGHT_ONLY -> AppSettings.LayoutMode.DUAL
+            deviceOpMutex.withLock {
+                var target = device
+                if (!target.hasPermission) {
+                    val granted = withContext(Dispatchers.IO) {
+                        cameraManager.requestPermission(target)
+                    }
+                    if (!granted) {
+                        emit("未授权：${target.displayText}")
+                        syncUiState()
+                        return@withLock
+                    }
+                    // 授权后刷新设备对象（hasPermission 状态更新）
+                    target = cameraManager.devices.value
+                        .firstOrNull { it.deviceId == device.deviceId } ?: device
+                }
+                assignDeviceToSlot(slot, target)
+                startStreamWithRetry()
             }
-            application.settingsRepository.setLayoutMode(next)
-            log("布局切换：$next")
         }
     }
 
-    private fun log(text: String) {
-        logLine.update { text }
+    private fun assignDeviceToSlot(slot: Int, device: UsbDeviceInfo) {
+        cameraManager.assignDeviceToSlot(slot, device)
+        val camera = cameraManager.getCamera(slot)
+        Logger.i(
+            TAG,
+            "assign device: slot=$slot device=${device.displayText} " +
+                "caps=${camera?.capabilities?.size} default=${camera?.defaultProfile}"
+        )
+        syncUiState()
+    }
+
+    /**
+     * 切换某槽位的分辨率 / 帧率（仅可选择该摄像头能力枚举范围内的档位）。
+     * 会停止当前流、用新档位重新协商、重新开流。
+     */
+    fun switchProfile(slot: Int, profile: StreamProfile) {
+        viewModelScope.launch {
+            deviceOpMutex.withLock {
+                cameraManager.switchProfile(slot, profile)
+                startStreamWithRetry(slotOnly = slot)
+            }
+        }
+    }
+
+    /** 拍照：保存该槽位当前帧 JPEG */
+    fun takePhoto(slot: Int) {
+        val slotState = _uiState.value.slots[slot]
+        if (slotState.device == null || !slotState.streaming) {
+            emit("该通道暂无画面，无法拍照")
+            return
+        }
+        viewModelScope.launch {
+            val dir = settingsRepository.settings.first().photoDirUri
+            captureManager.takePhoto(slot, dir) { result ->
+                result.onSuccess { emit("照片已保存：$it") }
+                    .onFailure { emit("拍照失败：${it.message}") }
+            }
+        }
+    }
+
+    /** 开始 / 停止录像（分辨率帧率取当前档位） */
+    fun toggleRecording(slot: Int) {
+        if (captureManager.isRecording(slot)) {
+            captureManager.stopRecording(slot) { result ->
+                result.onSuccess { emit("录像已保存：$it") }
+                    .onFailure { emit("录像失败：${it.message}") }
+                updateRecordingFlags()
+            }
+            updateRecordingFlags()
+            return
+        }
+        val slotState = _uiState.value.slots[slot]
+        val profile = slotState.activeProfile
+        if (slotState.device == null || !slotState.streaming || profile == null) {
+            emit("该通道暂无画面，无法录像")
+            return
+        }
+        viewModelScope.launch {
+            val dir = settingsRepository.settings.first().videoDirUri
+            val ok = captureManager.startRecording(
+                slot, profile.width, profile.height, profile.fps, dir
+            )
+            if (!ok) emit("录像启动失败")
+            updateRecordingFlags()
+        }
+    }
+
+    private fun updateRecordingFlags() {
+        _uiState.update { st ->
+            st.copy(
+                slots = st.slots.map { s ->
+                    s.copy(recording = captureManager.isRecording(s.slot))
+                }
+            )
+        }
+    }
+
+    /** 循环布局模式：双屏 → 仅左 → 仅右 → 双屏（纯显示控制，不停取流） */
+    fun cycleLayoutMode() {
+        val next = when (_uiState.value.layoutMode) {
+            AppSettings.LayoutMode.DUAL -> AppSettings.LayoutMode.LEFT_ONLY
+            AppSettings.LayoutMode.LEFT_ONLY -> AppSettings.LayoutMode.RIGHT_ONLY
+            AppSettings.LayoutMode.RIGHT_ONLY -> AppSettings.LayoutMode.DUAL
+        }
+        applyLayoutMode(next)
+    }
+
+    fun applyLayoutMode(mode: AppSettings.LayoutMode) {
+        viewModelScope.launch {
+            settingsRepository.setLayoutMode(mode)
+            _uiState.update { it.copy(layoutMode = mode) }
+        }
+    }
+
+    /**
+     * 确保所有已分配槽位都在取流；缺流的按顺序补齐。
+     * 设备打开/格式协商（失败可能因设备忙/时序）统一加重试，提升冷启动成功率。
+     * @param slotOnly 仅处理指定槽位（切换分辨率时用）；null=全部
+     */
+    private suspend fun startStreamWithRetry(
+        maxRetry: Int = 3,
+        slotOnly: Int? = null
+    ) {
+        // 全量恢复时：已授权但未分配的设备自动补到空槽位（冷启动 / 刷新 / 热插拔共用）
+        if (slotOnly == null) {
+            cameraManager.devices.value
+                .filter { it.hasPermission && cameraManager.findDeviceSlot(it.deviceId) < 0 }
+                .sortedBy { it.deviceId }
+                .forEach { device ->
+                    val free = findFreeSlot()
+                    if (free >= 0) assignDeviceToSlot(free, device)
+                }
+        }
+        val slots = if (slotOnly != null) listOf(slotOnly)
+        else (0 until UvcCameraManager.SLOT_COUNT).toList()
+        for (slot in slots) {
+            val device = cameraManager.slotDevice(slot) ?: continue
+            var camera = cameraManager.getCamera(slot)
+            if (camera == null) {
+                val open = cameraManager.openCamera(slot, device)
+                if (open is UvcCameraManager.OpenResult.Failure) {
+                    Logger.w(TAG, "openCamera failed slot=$slot reason=${open.reason}")
+                    _uiState.update { it.copy(statusText = "打开失败：${device.displayText}") }
+                    continue
+                }
+                camera = cameraManager.getCamera(slot)
+            }
+            if (camera != null && camera.streaming) {
+                Logger.i(TAG, "slot=$slot already streaming, skip")
+                continue
+            }
+            val profile = camera?.currentProfile ?: camera?.defaultProfile
+            if (profile == null) {
+                Logger.w(TAG, "slot=$slot no profile available")
+                continue
+            }
+            var ok = false
+            var lastError = "协商失败"
+            repeat(maxRetry) { attempt ->
+                val started = cameraManager.startStream(slot, profile)
+                if (started) {
+                    ok = true
+                    Logger.i(TAG, "slot=$slot stream started (attempt=${attempt + 1}) profile=$profile")
+                    return@repeat
+                }
+                lastError = "取流协商失败"
+                Logger.w(TAG, "slot=$slot start attempt=${attempt + 1} failed")
+                cameraManager.stopStream(slot)
+                cameraManager.closeCamera(slot)
+                kotlinx.coroutines.delay(300L * (attempt + 1))
+                cameraManager.openCamera(slot, device)
+            }
+            if (!ok) {
+                _uiState.update {
+                    it.copy(statusText = "取流失败：${device.displayText}（$lastError）")
+                }
+            }
+        }
+        syncUiState()
+    }
+
+    private fun emit(msg: String) {
+        _events.tryEmit(msg)
+        _uiState.update { it.copy(statusText = msg) }
+    }
+
+    /** 从 Domain 层同步最新状态到 UI（含活跃档位与取流状态） */
+    private fun syncUiState() {
+        val slotStates = (0 until UvcCameraManager.SLOT_COUNT).map { slot ->
+            val camera = cameraManager.getCamera(slot)
+            SlotState(
+                slot = slot,
+                device = cameraManager.slotDevice(slot),
+                capabilities = camera?.capabilities ?: emptyList(),
+                activeProfile = camera?.currentProfile,
+                streaming = camera?.streaming ?: false,
+                recording = captureManager.isRecording(slot)
+            )
+        }
+        val assignedDeviceIds =
+            (0 until UvcCameraManager.SLOT_COUNT)
+                .mapNotNull { cameraManager.slotDevice(it)?.deviceId }.toSet()
+        val unassigned = cameraManager.devices.value.filter { it.deviceId !in assignedDeviceIds }
+        val streamingCount = slotStates.count { it.streaming }
+        val status = when {
+            cameraManager.devices.value.isEmpty() -> "未检测到 USB 设备"
+            streamingCount == 0 -> "检测到 ${cameraManager.devices.value.size} 个设备"
+            else -> "预览中 · $streamingCount/${UvcCameraManager.SLOT_COUNT} 路"
+        }
+        _uiState.update {
+            it.copy(
+                slots = slotStates,
+                unassignedDevices = unassigned,
+                statusText = status
+            )
+        }
+    }
+
+    /** 主动拉取一次状态（Activity 恢复时用） */
+    fun refreshState() {
+        syncUiState()
+    }
+
+    companion object {
+        private const val TAG = "view-model"
     }
 }

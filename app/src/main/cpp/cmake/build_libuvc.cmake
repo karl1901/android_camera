@@ -26,9 +26,12 @@ target_include_directories(uvc_static PUBLIC
     ${CMAKE_CONFIG_DIR}           # libuvc/libuvc_config.h（见 cmake/config/libuvc/）
 )
 
-# 不定义 LIBUVC_HAS_JPEG：MJPEG 直接透传，frame-mjpeg.c 不参与编译
+# 不定义 LIBUVC_HAS_JPEG：MJPEG 直接透传，frame-mjpeg.c 不参与编译。
+# LIBUVC_NUM_TRANSFER_BUFS：同时在途的 URB 数。默认 100 会带来大量调度开销
+# 与延迟，每个 URB 8 packets(1ms)，16 个 = 16ms 缓冲，兼顾吞吐与低延迟。
 target_compile_definitions(uvc_static PRIVATE
     _GNU_SOURCE=1
+    LIBUVC_NUM_TRANSFER_BUFS=16
 )
 
 target_link_libraries(uvc_static PUBLIC usb_static)

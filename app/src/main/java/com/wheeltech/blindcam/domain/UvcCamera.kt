@@ -20,9 +20,20 @@ class UvcCamera(
     @Volatile
     var streaming: Boolean = false
 
+    /** 该摄像头支持的 MJPEG 规格（open 后从设备 descriptor 查询），最大规格在最前 */
+    @Volatile
+    var capabilities: List<StreamProfile> = emptyList()
+
+    /** 当前取流使用的规格 */
+    @Volatile
+    var currentProfile: StreamProfile? = null
+
     val fd: Int
         get() = connection?.fileDescriptor ?: -1
 
     val isOpen: Boolean
         get() = nativeHandle != 0L
+
+    /** 该设备的最大规格（默认选择）；无能力信息时返回 null */
+    val defaultProfile: StreamProfile? get() = capabilities.firstOrNull()
 }

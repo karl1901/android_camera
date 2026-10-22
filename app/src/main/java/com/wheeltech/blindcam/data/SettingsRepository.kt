@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -30,6 +31,9 @@ class SettingsRepository(private val context: Context) {
         val FLIP_LEFT = booleanPreferencesKey("flip_left")
         val FLIP_RIGHT = booleanPreferencesKey("flip_right")
         val LAYOUT_MODE = intPreferencesKey("layout_mode")
+        val THEME_MODE = intPreferencesKey("theme_mode")
+        val PHOTO_DIR_URI = stringPreferencesKey("photo_dir_uri")
+        val VIDEO_DIR_URI = stringPreferencesKey("video_dir_uri")
     }
 
     val settings: Flow<AppSettings> = context.uvcDataStore.data.map { p ->
@@ -44,7 +48,12 @@ class SettingsRepository(private val context: Context) {
             flipRight = p[Keys.FLIP_RIGHT] ?: defaults.flipRight,
             layoutMode = p[Keys.LAYOUT_MODE]?.let {
                 runCatching { AppSettings.LayoutMode.entries[it] }.getOrNull()
-            } ?: defaults.layoutMode
+            } ?: defaults.layoutMode,
+            themeMode = p[Keys.THEME_MODE]?.let {
+                runCatching { AppSettings.ThemeMode.entries[it] }.getOrNull()
+            } ?: defaults.themeMode,
+            photoDirUri = p[Keys.PHOTO_DIR_URI] ?: defaults.photoDirUri,
+            videoDirUri = p[Keys.VIDEO_DIR_URI] ?: defaults.videoDirUri
         )
     }
 
@@ -73,6 +82,15 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setLayoutMode(mode: AppSettings.LayoutMode) =
         edit { it[Keys.LAYOUT_MODE] = mode.ordinal }
+
+    suspend fun setThemeMode(mode: AppSettings.ThemeMode) =
+        edit { it[Keys.THEME_MODE] = mode.ordinal }
+
+    suspend fun setPhotoDirUri(uri: String) =
+        edit { it[Keys.PHOTO_DIR_URI] = uri }
+
+    suspend fun setVideoDirUri(uri: String) =
+        edit { it[Keys.VIDEO_DIR_URI] = uri }
 
     private suspend fun edit(block: (androidx.datastore.preferences.core.MutablePreferences) -> Unit) {
         context.uvcDataStore.edit(block)

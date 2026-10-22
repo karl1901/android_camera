@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- 顶部工具栏图标按钮（跟随主题前景色） -->
+    <style name="BlindCam.ToolButton" parent="Widget.AppCompat.ImageButton">
+        <item name="android:layout_width">44dp</item>
+        <item name="android:layout_height">44dp</item>
+        <item name="android:layout_marginStart">4dp</item>
+        <item name="android:background">?attr/selectableItemBackgroundBorderless</item>
+        <item name="android:scaleType">fitCenter</item>
+        <item name="android:padding">10dp</item>
+        <item name="android:tint">@color/app_on_surface</item>
+    </style>
+
+    <!-- 悬浮在预览画面右下角的圆形拍照 / 录像按钮（做小，少挡视野） -->
+    <style name="BlindCam.CaptureButton" parent="Widget.AppCompat.ImageButton">
+        <item name="android:layout_width">38dp</item>
+        <item name="android:layout_height">38dp</item>
+        <item name="android:layout_margin">6dp</item>
+        <item name="android:background">@drawable/bg_capture_button</item>
+        <item name="android:scaleType">fitCenter</item>
+        <item name="android:padding">9dp</item>
+        <item name="android:tint">@color/white</item>
+    </style>
+
+    <!-- 底部设备 chip 上的按钮 -->
+    <style name="BlindCam.ChipButton" parent="Widget.Material3.Button.TextButton">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:textColor">@color/brand_blue</item>
+    </style>
+
+</resources>

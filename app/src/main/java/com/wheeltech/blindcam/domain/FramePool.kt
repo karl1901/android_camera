@@ -1,38 +1,47 @@
 package com.wheeltech.blindcam.domain
 
-import java.util.ArrayDeque
-
 /**
- * byte[] 对象池：帧数据复用，防 OOM / 减少 GC 卡顿。
+ * byte[] 复用池：供渲染线程在接收帧时拷贝数据，避免每帧 new 大数组造成
+ * 频繁 GC 卡顿。
  *
- * 说明：JNI 层 NewByteArray 每帧产生一个新数组（native 内存无法直接池化），
- * 本池主要服务于渲染/录像二次处理（如解码中转、封装拷贝）的缓冲复用。
- * 只缓存与请求尺寸相同的数组，避免大数组长期占用小请求场景。
+ * 采用 best-fit：acquire 时返回池中容量 ≥ 请求大小的最小数组，
+ * 归还后按容量复用；池内数组总数受 [maxTotal] 严格限制，超出即丢弃，
+ * 不会无限增长（防止不同帧大小导致的内存泄漏）。
+ *
+ * 注意：调用方必须保证归还的数组不再被使用。
  */
 class FramePool(
-    private val maxPooledPerSize: Int = 6
+    private val maxTotal: Int = 12
 ) {
-    private val pools = HashMap<Int, ArrayDeque<ByteArray>>()
+    private val pool = java.util.ArrayDeque<ByteArray>()
 
     @Synchronized
     fun acquire(size: Int): ByteArray {
-        val deque = pools[size]
-        if (deque != null && deque.isNotEmpty()) {
-            return deque.removeFirst()
+        // best-fit：池中 >= size 的最小数组
+        val it = pool.iterator()
+        var best: ByteArray? = null
+        while (it.hasNext()) {
+            val b = it.next()
+            if (b.size >= size && (best == null || b.size < best.size)) {
+                best = b
+            }
+        }
+        if (best != null) {
+            pool.remove(best)
+            return best
         }
         return ByteArray(size)
     }
 
     @Synchronized
     fun recycle(buffer: ByteArray) {
-        val deque = pools.getOrPut(buffer.size) { ArrayDeque() }
-        if (deque.size < maxPooledPerSize) {
-            deque.addLast(buffer)
-        }
+        if (pool.size >= maxTotal) return
+        // 同容量去重，避免冗余
+        pool.addFirst(buffer)
     }
 
     @Synchronized
     fun clear() {
-        pools.clear()
+        pool.clear()
     }
 }

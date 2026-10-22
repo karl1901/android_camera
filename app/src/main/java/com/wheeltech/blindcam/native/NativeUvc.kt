@@ -76,4 +76,13 @@ object NativeUvc {
     /** libuvc 中 UVC_FRAME_FORMAT_MJPEG 的枚举值，供上层判断帧格式 */
     @JvmStatic
     external fun nativeGetMjpegFormat(): Int
+
+    /**
+     * 查询摄像头支持的 MJPEG 分辨率与帧率。
+     * 返回编码串 "MJPEG;WxH:fps,fps;WxH:fps"，多个格式用 '|' 分隔。
+     */
+    external fun nativeQueryCapabilities(sessionHandle: Long): String
+
+    /** 更新会话 cameraId（设备在槽位间重新映射时调用） */
+    external fun nativeSetCameraId(sessionHandle: Long, cameraId: Int)
 }

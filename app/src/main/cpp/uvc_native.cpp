@@ -29,6 +29,10 @@
 // libuvc.h 中的 uvc_wrap（要求 >= 0x01000107）才会被声明
 #include <libusb.h>
 #include <libuvc/libuvc.h>
+#include <libuvc/libuvc_internal.h>
+#include <string>
+#include <vector>
+#include <algorithm>
 #endif
 
 static JavaVM *g_vm = nullptr;
@@ -59,6 +63,8 @@ struct UvcSession {
     jobject callbackGlobalRef = nullptr;   // FrameCallback 的全局引用
     jclass callbackIfaceClass = nullptr;  // FrameCallback 接口类全局引用
     jmethodID onFrameMid = nullptr;       // 接口 onFrame 方法 ID
+    jbyteArray frameArray = nullptr;      // 复用的帧字节数组（全局引用，避免每帧 NewByteArray）
+    jsize frameArrayCap = 0;              // frameArray 当前容量
 #if UVC_HAVE_LIBUVC
     uvc_context_t       *ctx = nullptr;   // 不持有所有权（归 NativeUvc 上下文）
     uvc_device_t        *dev = nullptr;
@@ -146,10 +152,24 @@ static void onUvcFrame(uvc_frame_t *frame, void *userPtr) {
         return;
     }
 
-    jbyteArray byteArray = env->NewByteArray(static_cast<jsize>(frame->data_bytes));
+    jsize need = static_cast<jsize>(frame->data_bytes);
+    // 复用本会话的数组：容量不足时才重建（按最大帧大小增长，之后稳定复用）
+    if (session->frameArray == nullptr || session->frameArrayCap < need) {
+        if (session->frameArray != nullptr) {
+            env->DeleteGlobalRef(session->frameArray);
+            session->frameArray = nullptr;
+        }
+        jbyteArray fresh = env->NewByteArray(need);
+        if (fresh != nullptr) {
+            session->frameArray = static_cast<jbyteArray>(env->NewGlobalRef(fresh));
+            env->DeleteLocalRef(fresh);
+            session->frameArrayCap = need;
+        }
+    }
+    jbyteArray byteArray = session->frameArray;
     if (byteArray) {
         env->SetByteArrayRegion(
-                byteArray, 0, static_cast<jsize>(frame->data_bytes),
+                byteArray, 0, need,
                 reinterpret_cast<const jbyte *>(frame->data));
 
         // 使用 nativeStartStream 中缓存的接口类与方法 ID（native 线程
@@ -166,7 +186,6 @@ static void onUvcFrame(uvc_frame_t *frame, void *userPtr) {
                     static_cast<jint>(frame->height),
                     static_cast<jint>(frame->frame_format));
         }
-        env->DeleteLocalRef(byteArray);
     } else if (s_frameCount <= 3) {
         native_diag("NewByteArray FAILED");
     }
@@ -277,8 +296,8 @@ Java_com_wheeltech_blindcam_native_NativeUvc_nativeOpenFd(
             int spd = libusb_get_device_speed(ldev);
             struct libusb_device_descriptor dd;
             if (libusb_get_device_descriptor(ldev, &dd) == 0) {
-                native_diag("speed=%d(1=full,2=high,3=super) bcdUSB=%x bcdDevice=%x bNumConfigurations=%d",
-                              spd, dd.bcdUSB, dd.bcdDevice, dd.bNumConfigurations);
+                native_diag("open cam=%d vid=%04x pid=%04x speed=%d(1=full,2=high,3=super) bcdUSB=%x bcdDevice=%x bNumConfigurations=%d",
+                              cameraId, vid, pid, spd, dd.bcdUSB, dd.bcdDevice, dd.bNumConfigurations);
             }
         }
     }
@@ -314,6 +333,11 @@ Java_com_wheeltech_blindcam_native_NativeUvc_nativeClose(JNIEnv *env, jobject, j
     if (session->callbackIfaceClass) {
         env->DeleteGlobalRef(session->callbackIfaceClass);
         session->callbackIfaceClass = nullptr;
+    }
+    if (session->frameArray) {
+        env->DeleteGlobalRef(session->frameArray);
+        session->frameArray = nullptr;
+        session->frameArrayCap = 0;
     }
     delete session;
 }
@@ -396,5 +420,206 @@ Java_com_wheeltech_blindcam_native_NativeUvc_nativeGetMjpegFormat(JNIEnv *, jcla
     return static_cast<jint>(UVC_FRAME_FORMAT_MJPEG);
 #else
     return -1;
+#endif
+}
+
+#if UVC_HAVE_LIBUVC
+// 原始 UVC 描述符 dump：当 libuvc 解析出的 format_descs 为空时，直接遍历
+// libusb 配置描述符的 extra 字节，打印每个 VideoStreaming 描述符的 subtype，
+// 用于判断设备是否只有非 MJPEG 格式或描述符布局不规范。
+static void dumpRawUvcDescriptors(uvc_device_handle_t *devh) {
+    libusb_device_handle *h = uvc_get_libusb_handle(devh);
+    if (!h) return;
+    libusb_device *ldev = libusb_get_device(h);
+    if (!ldev) return;
+    struct libusb_config_descriptor *cfg = nullptr;
+    if (libusb_get_active_config_descriptor(ldev, &cfg) != 0 || !cfg) return;
+    native_diag("rawDesc nIf=%u", cfg->bNumInterfaces);
+    // 直接通过控制传输读取完整 config 描述符原始字节，避免 libusb 拆分 extra 的歧义
+    {
+        unsigned char hdr[9];
+        int got = libusb_control_transfer(
+            h, 0x80, 0x06, (uint16_t)(0x0200 | cfg->bConfigurationValue), 0,
+            hdr, 9, 1000);
+        if (got == 9) {
+            int totalLen = hdr[2] | (hdr[3] << 8);
+            std::vector<unsigned char> raw(totalLen);
+            int got2 = libusb_control_transfer(
+                h, 0x80, 0x06, (uint16_t)(0x0200 | cfg->bConfigurationValue), 0,
+                raw.data(), (uint16_t)totalLen, 2000);
+            if (got2 > 0) {
+                std::string all;
+                char hb[8];
+                for (int k = 0; k < got2; ++k) {
+                    snprintf(hb, sizeof(hb), "%02X ", raw[k]);
+                    all += hb;
+                }
+                native_diag("rawCfg total=%d [%s]", got2, all.c_str());
+            }
+        }
+    }
+    for (uint8_t i = 0; i < cfg->bNumInterfaces; ++i) {
+        const struct libusb_interface *itf = &cfg->interface[i];
+        for (int a = 0; a < itf->num_altsetting; ++a) {
+            const struct libusb_interface_descriptor *alt = &itf->altsetting[a];
+            if (a == 0)
+                native_diag("rawDesc if=%d class=0x%02X sub=0x%02X nAlt=%d nEp=%d alt0extra=%d",
+                            alt->bInterfaceNumber, alt->bInterfaceClass,
+                            alt->bInterfaceSubClass,
+                            itf->num_altsetting, alt->bNumEndpoints,
+                            itf->altsetting[0].extra_length);
+            // 每个 alt 的端点信息（地址/属性/最大包长/extra），定位非标准设备的数据流端点
+            for (int e = 0; e < alt->bNumEndpoints; ++e) {
+                const struct libusb_endpoint_descriptor *ep = &alt->endpoint[e];
+                native_diag("rawEp if=%d alt=%d ep=0x%02X attr=0x%02X maxPkt=%u epExtra=%d",
+                            alt->bInterfaceNumber, alt->bAlternateSetting,
+                            ep->bEndpointAddress, ep->bmAttributes,
+                            ep->wMaxPacketSize, ep->extra_length);
+            }
+            const unsigned char *p = alt->extra;
+            int total = alt->extra_length;
+            // 完整连续 dump（仅 alt=0），便于分析非标准描述符
+            if (a == 0 && total > 0) {
+                std::string full;
+                char hb[8];
+                for (int k = 0; k < total; ++k) {
+                    snprintf(hb, sizeof(hb), "%02X ", p[k]);
+                    full += hb;
+                }
+                native_diag("fullExtra if=%d len=%d [%s]",
+                            alt->bInterfaceNumber, total, full.c_str());
+            }
+            int off = 0;
+            while (p && off + 2 < total) {
+                int len = p[off];
+                int type = p[off+1];
+                if (len <= 0 || off + len > total) break;
+                // 0x24=VideoStreaming class-specific descriptor；第二字节是 subtype
+                if (type == 0x24 && off + 2 < total) {
+                    int sub = p[off+2];
+                    const char *name = "VS_other";
+                    if (sub==0x01) name="INPUT_HEADER";
+                    else if (sub==0x03) name="STILL";
+                    else if (sub==0x04) name="FORMAT_UNCOMPRESSED";
+                    else if (sub==0x05) name="FRAME_UNCOMPRESSED";
+                    else if (sub==0x06) name="FORMAT_MJPEG";
+                    else if (sub==0x07) name="FRAME_MJPEG";
+                    else if (sub==0x0d) name="COLORFORMAT";
+                    std::string hex;
+                    int dumpLen = len < 38 ? len : 38;
+                    char hb[8];
+                    for (int k = 0; k < dumpLen; ++k) {
+                        snprintf(hb, sizeof(hb), "%02X ", p[off+k]);
+                        hex += hb;
+                    }
+                    native_diag("rawDesc if=%d alt=%d sub=0x%02X(%s) len=%d [%s]",
+                                alt->bInterfaceNumber, alt->bAlternateSetting, sub, name,
+                                len, hex.c_str());
+                }
+                off += len;
+            }
+        }
+    }
+    libusb_free_config_descriptor(cfg);
+}
+
+// 把单个 MJPEG format 下的所有 frame 及帧率编码为 "WxH:fps,fps;WxH:fps"
+static std::string encodeMjpegFormat(uvc_format_desc_t *fmt) {
+    std::string out;
+    bool firstFrame = true;
+    for (uvc_frame_desc_t *frame = fmt->frame_descs; frame; frame = frame->next) {
+        if (!firstFrame) out += ";";
+        firstFrame = false;
+        out += std::to_string(frame->wWidth) + "x" + std::to_string(frame->wHeight) + ":";
+
+        // 原始 interval 诊断：确认设备描述符真实报告的间隔
+        {
+            std::string raw;
+            if (frame->intervals) {
+                for (int i = 0; frame->intervals[i] != 0 && i < 12; ++i) {
+                    raw += std::to_string(frame->intervals[i]) + ",";
+                }
+            }
+            native_diag("frameDesc %dx%d defaultIv=%u minIv=%u maxIv=%u step=%u raw=[%s]",
+                        frame->wWidth, frame->wHeight,
+                        frame->dwDefaultFrameInterval,
+                        frame->dwMinFrameInterval,
+                        frame->dwMaxFrameInterval,
+                        frame->dwFrameIntervalStep, raw.c_str());
+        }
+
+        // intervals 为 100ns 单位、0 终止；去重并按帧率降序
+        std::vector<int> fpsList;
+        if (frame->intervals) {
+            for (int i = 0; frame->intervals[i] != 0; ++i) {
+                uint32_t iv = frame->intervals[i];
+                if (iv == 0) continue;
+                int fps = static_cast<int>(10000000u / iv);
+                if (fps > 0 && std::find(fpsList.begin(), fpsList.end(), fps) == fpsList.end())
+                    fpsList.push_back(fps);
+            }
+        }
+        // 兜底：没有离散 intervals 时用默认 interval
+        if (fpsList.empty() && frame->dwDefaultFrameInterval > 0)
+            fpsList.push_back(static_cast<int>(10000000u / frame->dwDefaultFrameInterval));
+        std::sort(fpsList.begin(), fpsList.end(), std::greater<int>());
+        for (size_t i = 0; i < fpsList.size(); ++i) {
+            if (i) out += ",";
+            out += std::to_string(fpsList[i]);
+        }
+    }
+    return out;
+}
+#endif
+
+// 更新会话的 cameraId（设备在槽位间重新映射时调用，保证帧回调命中新槽位）
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_wheeltech_blindcam_native_NativeUvc_nativeSetCameraId(
+        JNIEnv *, jobject, jlong sessionHandle, jint cameraId) {
+#if UVC_HAVE_LIBUVC
+    auto *session = reinterpret_cast<UvcSession *>(sessionHandle);
+    if (session) session->cameraId = cameraId;
+#else
+    (void) sessionHandle; (void) cameraId;
+#endif
+}
+
+// 查询摄像头支持的 MJPEG 分辨率与帧率。
+// 返回编码字符串："MJPEG;WxH:fps,fps;WxH:fps"，无能力返回空串。
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_wheeltech_blindcam_native_NativeUvc_nativeQueryCapabilities(
+        JNIEnv *env, jobject, jlong sessionHandle) {
+#if UVC_HAVE_LIBUVC
+    auto *session = reinterpret_cast<UvcSession *>(sessionHandle);
+    if (!session || !session->devh || !session->devh->info)
+        return env->NewStringUTF("");
+
+    std::string result;
+    uvc_device_info_t *info = session->devh->info;
+    int sifCount = 0, fmtCount = 0, mjpegCount = 0;
+    if (info) {
+        for (uvc_streaming_interface_t *sif = info->stream_ifs; sif; sif = sif->next) {
+            sifCount++;
+            for (uvc_format_desc_t *fmt = sif->format_descs; fmt; fmt = fmt->next) {
+                fmtCount++;
+                if (fmt->bDescriptorSubtype != UVC_VS_FORMAT_MJPEG) continue;
+                mjpegCount++;
+                std::string encoded = encodeMjpegFormat(fmt);
+                if (encoded.empty()) continue;
+                if (!result.empty()) result += "|";
+                result += "MJPEG;" + encoded;
+            }
+        }
+    }
+    native_diag("queryCapabilities: info=%p sif=%d fmt=%d mjpeg=%d result=[%s]",
+                (void*)info, sifCount, fmtCount, mjpegCount, result.c_str());
+    if (fmtCount == 0)
+        dumpRawUvcDescriptors(session->devh);
+    return env->NewStringUTF(result.c_str());
+#else
+    (void) sessionHandle;
+    return env->NewStringUTF("");
 #endif
 }

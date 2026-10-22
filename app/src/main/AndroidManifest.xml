@@ -30,6 +30,8 @@
     <!-- targetSdk=33：使用 connectedDevice 类型；该权限在 API34 引入，声明在低版本系统上无效但无害 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Android 13+ 前台服务通知（用户可拒绝，不影响 connectedDevice 取流） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- ============ 存储权限（按版本分支，运行时再做守卫） ============ -->
     <!-- 私有目录（filesDir/MediaStore 之外的 app-specific 目录）不需要任何存储权限 -->
@@ -57,6 +59,7 @@
             android:name=".ui.main.MainActivity"
             android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
             android:exported="true"
+            android:launchMode="singleTask"
             android:screenOrientation="landscape">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

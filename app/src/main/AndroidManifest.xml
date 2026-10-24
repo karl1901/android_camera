@@ -55,9 +55,11 @@
         android:theme="@style/Theme.UvcBlindCam"
         tools:targetApi="29">
 
+        <!-- 注意：configChanges 不包含 uiMode，系统切换深色/浅色时让 Activity 自动
+             recreate，使"跟随系统"主题在主界面实时生效（常驻状态机保证画面自动恢复） -->
         <activity
             android:name=".ui.main.MainActivity"
-            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+            android:configChanges="orientation|screenSize|keyboardHidden"
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="landscape">

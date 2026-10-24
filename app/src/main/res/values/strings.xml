@@ -3,44 +3,54 @@
     <string name="app_title">盲区辅助</string>
 
     <!-- 顶部工具栏 -->
+    <string name="btn_grant_all">一键授权</string>
     <string name="btn_refresh">刷新</string>
-    <string name="btn_layout">单/双屏</string>
+    <string name="btn_layout">切换布局</string>
     <string name="btn_settings">设置</string>
+    <string name="btn_record_all">总录像</string>
     <string name="btn_fullscreen">全屏</string>
     <string name="btn_exit_fullscreen">退出全屏</string>
 
     <!-- 预览区 -->
-    <string name="camera_left">左盲区</string>
-    <string name="camera_right">右盲区</string>
+    <string name="camera_unnamed">摄像头</string>
     <string name="camera_none">未分配</string>
+    <string name="camera_no_permission">未授权\n点击此处授权</string>
+    <string name="camera_retrying">取流失败，重试中…</string>
 
     <!-- 悬浮操作 -->
     <string name="action_photo">拍照</string>
     <string name="action_record">录像</string>
     <string name="action_stop_record">停止录像</string>
+    <string name="action_mirror">镜像</string>
+    <string name="action_rotate">旋转</string>
     <string name="action_choose_camera">选择摄像头</string>
+    <string name="action_rename">重命名</string>
     <string name="action_resolution">分辨率 / 帧率</string>
 
     <!-- 通用 -->
     <string name="common_cancel">取消</string>
     <string name="common_confirm">确定</string>
     <string name="recording_dot">● 录像中</string>
-    <string name="no_device">未检测到 USB 摄像头</string>
+    <string name="no_device">未检测到 USB 摄像头\n请插入 USB 摄像头</string>
+    <string name="rename_title">设置该摄像头名称</string>
+    <string name="rename_hint">输入名称（留空使用默认名称）</string>
 
     <!-- 设置 -->
     <string name="settings_title">设置</string>
+    <string name="settings_section_display">显示</string>
+    <string name="settings_section_storage">保存位置</string>
     <string name="settings_theme">主题</string>
     <string name="theme_system">跟随系统</string>
     <string name="theme_dark">深色</string>
     <string name="theme_light">浅色</string>
+    <string name="theme_tech_blue">科技蓝</string>
     <string name="settings_photo_dir">照片保存位置</string>
     <string name="settings_video_dir">录像保存位置</string>
     <string name="dir_default">应用默认目录</string>
     <string name="dir_choose">选择目录</string>
     <string name="settings_layout">显示布局</string>
-    <string name="layout_dual">双屏</string>
-    <string name="layout_left">仅左屏</string>
-    <string name="layout_right">仅右屏</string>
+    <string name="layout_auto">自动（按摄像头数量）</string>
+    <string name="layout_single">单看某一路</string>
 
     <!-- 对话框标题 -->
     <string name="dialog_choose_camera_title">选择显示的摄像头</string>

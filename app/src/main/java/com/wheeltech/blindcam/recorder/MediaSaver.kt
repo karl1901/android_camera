@@ -100,6 +100,16 @@ class MediaSaver(private val context: Context) {
         runCatching { if (cache.exists()) cache.delete() }
     }
 
+    /** 导出文本（如运行日志）到用户选择的 SAF 目录，返回文件名 */
+    fun exportText(treeUri: String, fileName: String, text: String): String {
+        val uri = Uri.parse(treeUri)
+        val doc = createDocument(uri, "text/plain", fileName)
+            ?: throw IllegalStateException("无法在所选目录创建文件")
+        context.contentResolver.openOutputStream(doc, "w")?.use { it.write(text.toByteArray()) }
+            ?: throw IllegalStateException("无法写入文件")
+        return fileName
+    }
+
     /** 在 SAF 目录树下创建文档，返回新文档 Uri */
     private fun createDocument(treeUri: Uri, mimeType: String, displayName: String): Uri? {
         return runCatching {

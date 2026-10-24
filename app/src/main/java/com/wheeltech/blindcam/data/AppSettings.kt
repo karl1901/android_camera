@@ -1,33 +1,38 @@
 package com.wheeltech.blindcam.data
 
 /**
- * 设置项数据模型（DataStore 持久化）
+ * 应用级全局设置（DataStore 持久化）。
+ * 单摄像头相关设置（名称/镜像/旋转/档位/顺序）见 [DeviceConfig]。
  */
 data class AppSettings(
-    /** APP 启动后默认开启摄像头（自动打开已授权设备） */
-    val enableCameraOnStart: Boolean = true,
-    /** 循环录像分片时长（秒） */
-    val clipDurationSec: Int = 60,
-    /** 最大存储占用（MB） */
-    val maxStorageMb: Int = 2048,
-    /** 左路画面水平镜像（默认关闭，显示正常正面画面） */
-    val mirrorLeft: Boolean = false,
-    /** 右路画面水平镜像（默认关闭，显示正常正面画面） */
-    val mirrorRight: Boolean = false,
-    /** 左路画面垂直翻转 */
-    val flipLeft: Boolean = false,
-    /** 右路画面垂直翻转 */
-    val flipRight: Boolean = false,
-    /** 布局模式 */
-    val layoutMode: LayoutMode = LayoutMode.DUAL,
+    /** 布局模式：AUTO=按摄像头数量自动 1/2/3/4 宫格；SINGLE=只看 [focusSlot] 这一路 */
+    val layoutMode: LayoutMode = LayoutMode.AUTO,
+    /** SINGLE 模式下要单看的槽位序号 */
+    val focusSlot: Int = 0,
     /** 主题模式（默认跟随系统） */
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     /** 拍照保存目录（SAF 目录树 Uri 字符串；空表示用应用私有默认目录） */
     val photoDirUri: String = "",
     /** 录像保存目录（SAF 目录树 Uri 字符串；空表示用应用私有默认目录） */
-    val videoDirUri: String = ""
-) {
-    enum class LayoutMode { DUAL, LEFT_ONLY, RIGHT_ONLY }
+    val videoDirUri: String = "",
 
-    enum class ThemeMode { SYSTEM, DARK, LIGHT }
+    // ===== 总录像 / 单路录像画面叠加信息（OSD）=====
+    /** 叠加左上角：自定义名称 */
+    val osdName: Boolean = true,
+    /** 叠加右上角：系统时间 yyyy-MM-dd HH:mm:ss */
+    val osdClock: Boolean = true,
+    /** 叠加左下角：车速（当前无车速数据源，默认关闭；预留） */
+    val osdSpeed: Boolean = false,
+
+    // ===== 预警 =====
+    /** 预警提示音音量（0–100） */
+    val warnVolume: Int = 70
+) {
+    enum class LayoutMode { AUTO, SINGLE }
+
+    /**
+     * 主题：跟随系统 / 深色 / 浅色 / 深色+蓝色科技风。
+     * ordinal 已持久化，新增项只能加在末尾，避免改动既有用户的选择。
+     */
+    enum class ThemeMode { SYSTEM, DARK, LIGHT, TECH_BLUE }
 }

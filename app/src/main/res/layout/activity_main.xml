@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  主界面（横屏车机）
-  - 顶部工具栏：常驻（全屏时隐藏）；刷新 / 单双屏 / 设置 / 全屏
-  - 中部：左右双路预览，每路悬浮「选择摄像头 / 分辨率帧率 / 拍照 / 录像」
-  - 底部设备栏：常驻（全屏时隐藏），显示已连接摄像头与授权状态
+  主界面（横屏车机，适配多种屏幕）
+  - 顶部工具栏（全屏时隐藏）：一键授权 / 刷新 / 布局 / 设置 / 全屏
+  - 中部：GridLayout 动态 1/2/3/4 宫格预览，面板由代码动态加入
+  - 底部设备栏（全屏时隐藏）：已连接摄像头与授权状态，可点未授权项手动授权
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/app_background"
+    android:background="?android:colorBackground"
     android:orientation="vertical">
 
     <!-- ============ 顶部工具栏 ============ -->
@@ -16,7 +16,7 @@
         android:id="@+id/barTop"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="@color/app_bar"
+        android:background="?attr/appBar"
         android:elevation="4dp"
         android:gravity="center_vertical"
         android:orientation="horizontal"
@@ -30,9 +30,15 @@
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:text="@string/app_title"
-            android:textColor="@color/app_on_surface"
+            android:textColor="?attr/colorOnSurface"
             android:textSize="18sp"
             android:textStyle="bold" />
+
+        <ImageButton
+            android:id="@+id/btnGrant"
+            style="@style/BlindCam.ToolButton"
+            android:contentDescription="@string/btn_grant_all"
+            android:src="@drawable/ic_key" />
 
         <ImageButton
             android:id="@+id/btnRefresh"
@@ -53,205 +59,31 @@
             android:src="@drawable/ic_settings" />
 
         <ImageButton
+            android:id="@+id/btnRecordAll"
+            style="@style/BlindCam.ToolButton"
+            android:contentDescription="@string/btn_record_all"
+            android:src="@drawable/ic_videocam" />
+
+        <ImageButton
             android:id="@+id/btnFullscreen"
             style="@style/BlindCam.ToolButton"
             android:contentDescription="@string/btn_fullscreen"
             android:src="@drawable/ic_fullscreen" />
     </LinearLayout>
 
-    <!-- ============ 预览区 ============ -->
+    <!-- ============ 预览区（动态宫格） ============ -->
     <FrameLayout
         android:id="@+id/previewArea"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1">
 
-        <LinearLayout
+        <GridLayout
+            android:id="@+id/gridPreview"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:baselineAligned="false"
-            android:orientation="horizontal">
-
-            <!-- ===== 左盲区 ===== -->
-            <FrameLayout
-                android:id="@+id/panelLeft"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:background="@color/black">
-
-                <TextureView
-                    android:id="@+id/textureLeft"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent" />
-
-                <!-- 左上：摄像头名（点击切换） + 分辨率帧率 -->
-                <LinearLayout
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="top|start"
-                    android:layout_margin="8dp"
-                    android:orientation="horizontal">
-
-                    <TextView
-                        android:id="@+id/btnCamLeft"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:background="@drawable/bg_overlay_chip"
-                        android:paddingStart="12dp"
-                        android:paddingTop="6dp"
-                        android:paddingEnd="12dp"
-                        android:paddingBottom="6dp"
-                        android:text="@string/camera_left"
-                        android:textColor="@color/white"
-                        android:textSize="13sp" />
-
-                    <TextView
-                        android:id="@+id/btnProfileLeft"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="6dp"
-                        android:background="@drawable/bg_overlay_chip"
-                        android:paddingStart="10dp"
-                        android:paddingTop="6dp"
-                        android:paddingEnd="10dp"
-                        android:paddingBottom="6dp"
-                        android:text="—"
-                        android:textColor="@color/white"
-                        android:textSize="13sp" />
-                </LinearLayout>
-
-                <!-- 录制指示 -->
-                <TextView
-                    android:id="@+id/tvRecLeft"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="top|end"
-                    android:layout_margin="8dp"
-                    android:background="@drawable/bg_overlay_chip"
-                    android:paddingStart="10dp"
-                    android:paddingTop="6dp"
-                    android:paddingEnd="10dp"
-                    android:paddingBottom="6dp"
-                    android:text="@string/recording_dot"
-                    android:textColor="#FFFF5252"
-                    android:textSize="13sp"
-                    android:visibility="gone" />
-
-                <!-- 右下角：拍照 / 录像（小按钮，少挡视野） -->
-                <LinearLayout
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="bottom|end"
-                    android:layout_marginEnd="10dp"
-                    android:layout_marginBottom="10dp"
-                    android:orientation="horizontal">
-
-                    <ImageButton
-                        android:id="@+id/btnPhotoLeft"
-                        style="@style/BlindCam.CaptureButton"
-                        android:contentDescription="@string/action_photo"
-                        android:src="@drawable/ic_camera" />
-
-                    <ImageButton
-                        android:id="@+id/btnRecordLeft"
-                        style="@style/BlindCam.CaptureButton"
-                        android:contentDescription="@string/action_record"
-                        android:src="@drawable/ic_videocam" />
-                </LinearLayout>
-            </FrameLayout>
-
-            <View
-                android:layout_width="2dp"
-                android:layout_height="match_parent"
-                android:background="@color/black" />
-
-            <!-- ===== 右盲区 ===== -->
-            <FrameLayout
-                android:id="@+id/panelRight"
-                android:layout_width="0dp"
-                android:layout_height="match_parent"
-                android:layout_weight="1"
-                android:background="@color/black">
-
-                <TextureView
-                    android:id="@+id/textureRight"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent" />
-
-                <LinearLayout
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="top|start"
-                    android:layout_margin="8dp"
-                    android:orientation="horizontal">
-
-                    <TextView
-                        android:id="@+id/btnCamRight"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:background="@drawable/bg_overlay_chip"
-                        android:paddingStart="12dp"
-                        android:paddingTop="6dp"
-                        android:paddingEnd="12dp"
-                        android:paddingBottom="6dp"
-                        android:text="@string/camera_right"
-                        android:textColor="@color/white"
-                        android:textSize="13sp" />
-
-                    <TextView
-                        android:id="@+id/btnProfileRight"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="6dp"
-                        android:background="@drawable/bg_overlay_chip"
-                        android:paddingStart="10dp"
-                        android:paddingTop="6dp"
-                        android:paddingEnd="10dp"
-                        android:paddingBottom="6dp"
-                        android:text="—"
-                        android:textColor="@color/white"
-                        android:textSize="13sp" />
-                </LinearLayout>
-
-                <TextView
-                    android:id="@+id/tvRecRight"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="top|end"
-                    android:layout_margin="8dp"
-                    android:background="@drawable/bg_overlay_chip"
-                    android:paddingStart="10dp"
-                    android:paddingTop="6dp"
-                    android:paddingEnd="10dp"
-                    android:paddingBottom="6dp"
-                    android:text="@string/recording_dot"
-                    android:textColor="#FFFF5252"
-                    android:textSize="13sp"
-                    android:visibility="gone" />
-
-                <LinearLayout
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_gravity="bottom|end"
-                    android:layout_marginEnd="10dp"
-                    android:layout_marginBottom="10dp"
-                    android:orientation="horizontal">
-
-                    <ImageButton
-                        android:id="@+id/btnPhotoRight"
-                        style="@style/BlindCam.CaptureButton"
-                        android:contentDescription="@string/action_photo"
-                        android:src="@drawable/ic_camera" />
-
-                    <ImageButton
-                        android:id="@+id/btnRecordRight"
-                        style="@style/BlindCam.CaptureButton"
-                        android:contentDescription="@string/action_record"
-                        android:src="@drawable/ic_videocam" />
-                </LinearLayout>
-            </FrameLayout>
-        </LinearLayout>
+            android:columnCount="2"
+            android:rowCount="2" />
 
         <!-- 无设备提示 -->
         <TextView
@@ -259,6 +91,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="center"
+            android:gravity="center"
             android:text="@string/no_device"
             android:textColor="#88FFFFFF"
             android:textSize="16sp"
@@ -270,7 +103,7 @@
         android:id="@+id/barBottom"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="@color/app_bar"
+        android:background="?attr/appBar"
         android:elevation="4dp"
         android:scrollbars="none">
 

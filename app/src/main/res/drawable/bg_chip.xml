@@ -2,6 +2,6 @@
 <!-- 底部设备 chip / 设置项圆角背景 -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
-    <solid android:color="@color/app_chip_bg" />
+    <solid android:color="?attr/chipBg" />
     <corners android:radius="10dp" />
 </shape>

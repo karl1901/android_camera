@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import org.json.JSONObject
 
 /** 应用级 DataStore（单例，懒加载） */
 private val Context.uvcDataStore: DataStore<Preferences> by preferencesDataStore(
@@ -17,71 +18,63 @@ private val Context.uvcDataStore: DataStore<Preferences> by preferencesDataStore
 )
 
 /**
- * 设置仓库：DataStore 偏好设置持久化
- * 所有读取走 [settings] Flow，写入为 suspend 函数，默认值集中在 [AppSettings]
+ * 设置仓库：DataStore 持久化。
+ * - 全局设置：布局 / 主题 / 保存目录
+ * - 设备设置：每路摄像头的顺序 / 名称 / 镜像 / 旋转 / 档位（JSON，按稳定标识绑定）
  */
 class SettingsRepository(private val context: Context) {
 
     private object Keys {
-        val ENABLE_CAMERA_ON_START = booleanPreferencesKey("enable_camera_on_start")
-        val CLIP_DURATION_SEC = intPreferencesKey("clip_duration_sec")
-        val MAX_STORAGE_MB = intPreferencesKey("max_storage_mb")
-        val MIRROR_LEFT = booleanPreferencesKey("mirror_left")
-        val MIRROR_RIGHT = booleanPreferencesKey("mirror_right")
-        val FLIP_LEFT = booleanPreferencesKey("flip_left")
-        val FLIP_RIGHT = booleanPreferencesKey("flip_right")
         val LAYOUT_MODE = intPreferencesKey("layout_mode")
+        val FOCUS_SLOT = intPreferencesKey("focus_slot")
         val THEME_MODE = intPreferencesKey("theme_mode")
         val PHOTO_DIR_URI = stringPreferencesKey("photo_dir_uri")
         val VIDEO_DIR_URI = stringPreferencesKey("video_dir_uri")
+        val DEVICE_CONFIGS = stringPreferencesKey("device_configs")
+        val OSD_NAME = booleanPreferencesKey("osd_name")
+        val OSD_CLOCK = booleanPreferencesKey("osd_clock")
+        val OSD_SPEED = booleanPreferencesKey("osd_speed")
+        val WARN_VOLUME = intPreferencesKey("warn_volume")
     }
 
     val settings: Flow<AppSettings> = context.uvcDataStore.data.map { p ->
         val defaults = AppSettings()
         AppSettings(
-            enableCameraOnStart = p[Keys.ENABLE_CAMERA_ON_START] ?: defaults.enableCameraOnStart,
-            clipDurationSec = p[Keys.CLIP_DURATION_SEC] ?: defaults.clipDurationSec,
-            maxStorageMb = p[Keys.MAX_STORAGE_MB] ?: defaults.maxStorageMb,
-            mirrorLeft = p[Keys.MIRROR_LEFT] ?: defaults.mirrorLeft,
-            mirrorRight = p[Keys.MIRROR_RIGHT] ?: defaults.mirrorRight,
-            flipLeft = p[Keys.FLIP_LEFT] ?: defaults.flipLeft,
-            flipRight = p[Keys.FLIP_RIGHT] ?: defaults.flipRight,
             layoutMode = p[Keys.LAYOUT_MODE]?.let {
                 runCatching { AppSettings.LayoutMode.entries[it] }.getOrNull()
             } ?: defaults.layoutMode,
+            focusSlot = p[Keys.FOCUS_SLOT] ?: defaults.focusSlot,
             themeMode = p[Keys.THEME_MODE]?.let {
                 runCatching { AppSettings.ThemeMode.entries[it] }.getOrNull()
             } ?: defaults.themeMode,
             photoDirUri = p[Keys.PHOTO_DIR_URI] ?: defaults.photoDirUri,
-            videoDirUri = p[Keys.VIDEO_DIR_URI] ?: defaults.videoDirUri
+            videoDirUri = p[Keys.VIDEO_DIR_URI] ?: defaults.videoDirUri,
+            osdName = p[Keys.OSD_NAME] ?: defaults.osdName,
+            osdClock = p[Keys.OSD_CLOCK] ?: defaults.osdClock,
+            osdSpeed = p[Keys.OSD_SPEED] ?: defaults.osdSpeed,
+            warnVolume = (p[Keys.WARN_VOLUME] ?: defaults.warnVolume).coerceIn(0, 100)
         )
     }
 
-    suspend fun setEnableCameraOnStart(value: Boolean) =
-        edit { it[Keys.ENABLE_CAMERA_ON_START] = value }
-
-    suspend fun setClipDurationSec(seconds: Int) =
-        edit { it[Keys.CLIP_DURATION_SEC] = seconds.coerceIn(10, 600) }
-
-    suspend fun setMaxStorageMb(mb: Int) =
-        edit { it[Keys.MAX_STORAGE_MB] = mb.coerceIn(256, 32 * 1024) }
-
-    suspend fun setMirror(slot: Int, value: Boolean) = edit {
-        when (slot) {
-            0 -> it[Keys.MIRROR_LEFT] = value
-            1 -> it[Keys.MIRROR_RIGHT] = value
+    /** 全部摄像头配置（key=稳定标识） */
+    val deviceConfigs: Flow<Map<String, DeviceConfig>> =
+        context.uvcDataStore.data.map { p ->
+            val raw = p[Keys.DEVICE_CONFIGS] ?: return@map emptyMap()
+            runCatching {
+                val root = JSONObject(raw)
+                val out = LinkedHashMap<String, DeviceConfig>()
+                root.keys().forEach { key ->
+                    out[key] = DeviceConfig.fromJson(key, root.getJSONObject(key))
+                }
+                out
+            }.getOrDefault(emptyMap())
         }
-    }
-
-    suspend fun setFlip(slot: Int, value: Boolean) = edit {
-        when (slot) {
-            0 -> it[Keys.FLIP_LEFT] = value
-            1 -> it[Keys.FLIP_RIGHT] = value
-        }
-    }
 
     suspend fun setLayoutMode(mode: AppSettings.LayoutMode) =
         edit { it[Keys.LAYOUT_MODE] = mode.ordinal }
+
+    suspend fun setFocusSlot(slot: Int) =
+        edit { it[Keys.FOCUS_SLOT] = slot.coerceAtLeast(0) }
 
     suspend fun setThemeMode(mode: AppSettings.ThemeMode) =
         edit { it[Keys.THEME_MODE] = mode.ordinal }
@@ -91,6 +84,54 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setVideoDirUri(uri: String) =
         edit { it[Keys.VIDEO_DIR_URI] = uri }
+
+    suspend fun setOsdName(v: Boolean) = edit { it[Keys.OSD_NAME] = v }
+    suspend fun setOsdClock(v: Boolean) = edit { it[Keys.OSD_CLOCK] = v }
+    suspend fun setOsdSpeed(v: Boolean) = edit { it[Keys.OSD_SPEED] = v }
+    suspend fun setWarnVolume(v: Int) = edit { it[Keys.WARN_VOLUME] = v.coerceIn(0, 100) }
+
+    /** 新增 / 更新单个摄像头配置 */
+    suspend fun saveDeviceConfig(cfg: DeviceConfig) {
+        edit { p ->
+            val map = decodeConfigs(p[Keys.DEVICE_CONFIGS])
+            map[cfg.key] = cfg
+            p[Keys.DEVICE_CONFIGS] = encodeConfigs(map)
+        }
+    }
+
+    /** 批量保存（用于拖动 / 重排顺序） */
+    suspend fun saveAllDeviceConfigs(configs: Map<String, DeviceConfig>) {
+        edit { p ->
+            val map = LinkedHashMap(configs)
+            p[Keys.DEVICE_CONFIGS] = encodeConfigs(map)
+        }
+    }
+
+    /** 删除某摄像头配置（设备永久不再使用时） */
+    suspend fun deleteDeviceConfig(key: String) {
+        edit { p ->
+            val map = decodeConfigs(p[Keys.DEVICE_CONFIGS])
+            if (map.remove(key) != null) p[Keys.DEVICE_CONFIGS] = encodeConfigs(map)
+        }
+    }
+
+    private fun decodeConfigs(raw: String?): LinkedHashMap<String, DeviceConfig> {
+        val out = LinkedHashMap<String, DeviceConfig>()
+        if (raw.isNullOrBlank()) return out
+        runCatching {
+            val root = JSONObject(raw)
+            root.keys().forEach { key ->
+                out[key] = DeviceConfig.fromJson(key, root.getJSONObject(key))
+            }
+        }
+        return out
+    }
+
+    private fun encodeConfigs(map: Map<String, DeviceConfig>): String {
+        val root = JSONObject()
+        map.forEach { (k, v) -> root.put(k, v.toJson()) }
+        return root.toString()
+    }
 
     private suspend fun edit(block: (androidx.datastore.preferences.core.MutablePreferences) -> Unit) {
         context.uvcDataStore.edit(block)

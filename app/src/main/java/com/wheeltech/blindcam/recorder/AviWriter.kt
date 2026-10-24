@@ -86,10 +86,24 @@ class AviWriter(
         frameCount++
     }
 
-    /** 回填头部、写 idx1 并关闭，返回最终文件 */
-    fun finish(): File {
+    /**
+     * 回填头部、写 idx1 并关闭，返回最终文件。
+     * @param actualFps 录制结束后按真实时间戳算出的平均帧率；非空时回填到头部，
+     *        避免设备实际只有 15–21fps 却按 30fps 标记导致回放加速、时长偏短。
+     */
+    fun finish(actualFps: Int? = null): File {
         val moviDataEnd = raf.filePointer
         val moviDataLen = (moviDataEnd - moviDataStart).toInt()
+
+        // 回填真实帧率到 avih.dwMicroSecPerFrame 与 strh.dwScale/dwRate
+        if (actualFps != null && actualFps >= 1) {
+            raf.seek(AVIH_MICROSEC_OFFSET.toLong())
+            writeLE32(raf, 1_000_000 / actualFps)
+            raf.seek(STRH_DWSCALE_OFFSET.toLong())
+            writeLE32(raf, 1)
+            raf.seek(STRH_DWRATE_OFFSET.toLong())
+            writeLE32(raf, actualFps)
+        }
 
         // idx1
         val idxBuf = ByteBuffer.allocate(8 + idx.size * 16).order(ByteOrder.LITTLE_ENDIAN)
@@ -133,6 +147,15 @@ class AviWriter(
     // RIFF(12) + LIST hdrl(12) + 'avih'(8) 然后 avih 结构
     private fun avihTotalFramesOffset(): Int =
         12 + 12 + 8 + (4 * 4) // avih 中前 4 个 DWORD 之后即 dwTotalFrames
+
+    // avih.dwMicroSecPerFrame：avih body 第 0 个字段 = 12+12+8
+    private val AVIH_MICROSEC_OFFSET = 12 + 12 + 8
+
+    // strh body 起始 = 12(RIFF)+12(hdrl)+(8+56 avih)+12(strl)+8(strh)
+    // dwScale 在 body offset 20、dwRate 在 offset 24
+    private val STRH_BODY_OFFSET = 12 + 12 + (8 + 56) + 12 + 8
+    private val STRH_DWSCALE_OFFSET = STRH_BODY_OFFSET + 20
+    private val STRH_DWRATE_OFFSET = STRH_BODY_OFFSET + 24
 
     // RIFF + hdrl(avih 完整) + LIST strl(12) + strh(8) + strh 前若干字段
     private fun strhLengthOffset(): Int {

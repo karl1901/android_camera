@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  单个摄像头面板（1/2/3/4 宫格中复用）
+  - TextureView 铺满
+  - 顶部：摄像头名称（点击重命名/选择） + 分辨率帧率（点击切换）
+  - 右上：录制指示
+  - 右下角：拍照 / 录像 / 镜像 / 旋转（小按钮，少挡视野）
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/black">
+
+    <TextureView
+        android:id="@+id/texturePanel"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- 顶部信息行 -->
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_margin="8dp"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/btnCam"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_overlay_chip"
+            android:paddingStart="12dp"
+            android:paddingTop="6dp"
+            android:paddingEnd="12dp"
+            android:paddingBottom="6dp"
+            android:text="@string/camera_unnamed"
+            android:textColor="@color/white"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/btnProfile"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:background="@drawable/bg_overlay_chip"
+            android:paddingStart="10dp"
+            android:paddingTop="6dp"
+            android:paddingEnd="10dp"
+            android:paddingBottom="6dp"
+            android:text="—"
+            android:textColor="@color/white"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <!-- 未授权 / 错误 占位（居中） -->
+    <TextView
+        android:id="@+id/tvStatus"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:gravity="center"
+        android:padding="16dp"
+        android:text="@string/camera_no_permission"
+        android:textColor="#CCFFFFFF"
+        android:textSize="14sp"
+        android:visibility="gone" />
+
+    <!-- 录制指示 -->
+    <TextView
+        android:id="@+id/tvRec"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_margin="8dp"
+        android:background="@drawable/bg_overlay_chip"
+        android:paddingStart="10dp"
+        android:paddingTop="6dp"
+        android:paddingEnd="10dp"
+        android:paddingBottom="6dp"
+        android:text="@string/recording_dot"
+        android:textColor="#FFFF5252"
+        android:textSize="13sp"
+        android:visibility="gone" />
+
+    <!-- 右下角：拍照 / 录像 / 镜像 / 旋转 -->
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end"
+        android:layout_marginEnd="8dp"
+        android:layout_marginBottom="8dp"
+        android:orientation="horizontal">
+
+        <ImageButton
+            android:id="@+id/btnPhoto"
+            style="@style/BlindCam.CaptureButton"
+            android:contentDescription="@string/action_photo"
+            android:src="@drawable/ic_camera" />
+
+        <ImageButton
+            android:id="@+id/btnRecord"
+            style="@style/BlindCam.CaptureButton"
+            android:contentDescription="@string/action_record"
+            android:src="@drawable/ic_videocam" />
+
+        <ImageButton
+            android:id="@+id/btnMirror"
+            style="@style/BlindCam.CaptureButton"
+            android:contentDescription="@string/action_mirror"
+            android:src="@drawable/ic_flip" />
+
+        <ImageButton
+            android:id="@+id/btnRotate"
+            style="@style/BlindCam.CaptureButton"
+            android:contentDescription="@string/action_rotate"
+            android:src="@drawable/ic_rotate" />
+    </LinearLayout>
+
+    <!-- 盲区预警红框（物体进入视野时显示，全屏也保留） -->
+    <View
+        android:id="@+id/viewWarn"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/bg_warning_border"
+        android:visibility="gone" />
+</FrameLayout>

@@ -9,7 +9,7 @@
         <item name="android:background">?attr/selectableItemBackgroundBorderless</item>
         <item name="android:scaleType">fitCenter</item>
         <item name="android:padding">10dp</item>
-        <item name="android:tint">@color/app_on_surface</item>
+        <item name="android:tint">?attr/colorOnSurface</item>
     </style>
 
     <!-- 悬浮在预览画面右下角的圆形拍照 / 录像按钮（做小，少挡视野） -->
@@ -27,7 +27,7 @@
     <style name="BlindCam.ChipButton" parent="Widget.Material3.Button.TextButton">
         <item name="android:layout_width">wrap_content</item>
         <item name="android:layout_height">wrap_content</item>
-        <item name="android:textColor">@color/brand_blue</item>
+        <item name="android:textColor">?attr/colorPrimary</item>
     </style>
 
 </resources>

@@ -22,10 +22,13 @@ class UvcCameraManager private constructor(context: Context) {
     companion object {
         private const val TAG = "manager"
 
-        /** 槽位：0=左盲区 1=右盲区（2=预留第三路 3=预留第四路） */
+        /** 最大同时显示路数（1/2/3/4 路自动宫格；架构上可继续扩展） */
+        const val MAX_SLOTS = 4
         const val SLOT_LEFT = 0
         const val SLOT_RIGHT = 1
-        const val SLOT_COUNT = 2
+
+        /** 兼容旧引用 */
+        const val SLOT_COUNT = MAX_SLOTS
 
         /** 默认取流参数（AHD 转 UVC 解码盒常见 1080p30 MJPEG；后续按能力协商） */
         const val DEFAULT_WIDTH = 640

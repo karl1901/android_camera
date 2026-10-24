@@ -108,6 +108,27 @@ class PreviewRenderer(
         }
     }
 
+    /** 清空画面（设备拔出 / 槽位置空 / 切换设备时调用，避免定格在最后一帧） */
+    fun clear() {
+        val currentSurface = surface ?: return
+        if (textureView.surfaceTexture == null) return
+        if (!painting.compareAndSet(false, true)) return
+        var canvas: Canvas? = null
+        try {
+            canvas = if (android.os.Build.VERSION.SDK_INT >= 23) {
+                currentSurface.lockHardwareCanvas()
+            } else {
+                currentSurface.lockCanvas(null)
+            }
+            canvas.drawColor(android.graphics.Color.BLACK)
+        } catch (t: Throwable) {
+            Logger.w(TAG, "clear failed: ${t.message}")
+        } finally {
+            if (canvas != null) runCatching { currentSurface.unlockCanvasAndPost(canvas) }
+            painting.set(false)
+        }
+    }
+
     fun release() {
         surface = null
     }

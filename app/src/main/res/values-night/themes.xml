@@ -1,18 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- 深色主题：状态栏图标用浅色 -->
+    <!-- 跟随系统时的夜间配色（仅覆盖基础主题；固定浅色/深色/科技蓝不受影响） -->
     <style name="Theme.UvcBlindCam" parent="Theme.Material3.DayNight.NoActionBar">
-        <item name="colorPrimary">@color/brand_blue</item>
-        <item name="colorPrimaryDark">@color/brand_blue_dark</item>
-        <item name="colorOnPrimary">@color/white</item>
-        <item name="android:colorBackground">@color/app_background</item>
-        <item name="colorSurface">@color/app_surface</item>
-        <item name="colorOnSurface">@color/app_on_surface</item>
-        <item name="android:statusBarColor">@color/app_bar</item>
-        <item name="android:navigationBarColor">@color/app_bar</item>
+        <item name="colorPrimary">#FF42A5F5</item>
+        <item name="colorPrimaryDark">#FF0D47A1</item>
+        <item name="colorOnPrimary">#FF061018</item>
+        <item name="colorSecondary">#FF42A5F5</item>
+        <item name="android:colorBackground">#FF0B0E12</item>
+        <item name="colorOnBackground">#FFECEFF3</item>
+        <item name="colorSurface">#FF141920</item>
+        <item name="colorOnSurface">#FFECEFF3</item>
+        <item name="colorSurfaceVariant">#FF1E2A3A</item>
+        <item name="colorOnSurfaceVariant">#FF9AA4B2</item>
+        <item name="colorOutline">#FF3A4452</item>
+        <item name="android:statusBarColor">#FF10141A</item>
+        <item name="android:navigationBarColor">#FF10141A</item>
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowFullscreen">false</item>
+        <item name="appBar">#FF10141A</item>
+        <item name="chipBg">#FF1E2A3A</item>
+        <item name="onSurfaceDim">#FF9AA4B2</item>
+        <item name="dividerColor">#FF262E38</item>
+        <item name="btnOutline">#FF3A4452</item>
+        <item name="previewLabel">#FFFFFFFF</item>
+        <item name="accentColor">#FF42A5F5</item>
     </style>
 
 </resources>

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 应用自定义主题色（多主题：浅色 / 深色 / 深色+蓝色科技风） -->
+    <!-- 顶部/底部栏背景 -->
+    <attr name="appBar" format="color" />
+    <!-- 设备 chip / 设置项圆角背景 -->
+    <attr name="chipBg" format="color" />
+    <!-- 次级文字 -->
+    <attr name="onSurfaceDim" format="color" />
+    <!-- 分隔线 -->
+    <attr name="dividerColor" format="color" />
+    <!-- 按钮描边 -->
+    <attr name="btnOutline" format="color" />
+    <!-- 预览上的标签文字（始终为白色，保证在画面上可读） -->
+    <attr name="previewLabel" format="color" />
+    <!-- 主题强调色（科技蓝主题更亮，用于高亮/指示） -->
+    <attr name="accentColor" format="color" />
+</resources>

@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbManager
@@ -46,6 +47,13 @@ class UsbMonitor(private val context: Context) {
     /** 每个设备当前的超时任务（deviceId -> Runnable） */
     private val timeoutRunnables = java.util.concurrent.ConcurrentHashMap<Int, Runnable>()
 
+    /**
+     * deviceId -> 已读到的序列号缓存。设备双路传输繁忙时 serialNumber 偶发返回 null，
+     * 一旦读到过非空序列号就锁定，避免稳定标识在「序列号/总线节点」之间反复横跳，
+     * 进而导致槽位被错误重排。设备拔出时清除。
+     */
+    private val serialCache = java.util.concurrent.ConcurrentHashMap<Int, String>()
+
     /** 热插拔事件 */
     sealed interface UsbEvent {
         data class Attached(val device: UsbDeviceInfo) : UsbEvent
@@ -73,13 +81,20 @@ class UsbMonitor(private val context: Context) {
                     val device = intent.getParcelableDeviceExtra()
                     Logger.i(TAG, "USB attached: ${device?.deviceName}")
                     refresh()
+                    // 仅 UVC 摄像头才触发授权/取流；胎压监测接收器等非视频设备直接忽略
                     device?.let { d ->
-                        _events.tryEmit(UsbEvent.Attached(toInfo(d)))
+                        if (isUvcCamera(d)) {
+                            _events.tryEmit(UsbEvent.Attached(toInfo(d)))
+                        } else {
+                            Logger.i(TAG, "skip non-UVC device: ${d.deviceName} " +
+                                "vid=${Integer.toHexString(d.vendorId)} pid=${Integer.toHexString(d.productId)}")
+                        }
                     }
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     val device = intent.getParcelableDeviceExtra()
                     Logger.i(TAG, "USB detached: ${device?.deviceName}")
+                    device?.let { serialCache.remove(it.deviceId) }
                     refresh()
                     device?.let { d ->
                         _events.tryEmit(UsbEvent.Detached(d.deviceId))
@@ -169,14 +184,35 @@ class UsbMonitor(private val context: Context) {
         permissionCallbacks.remove(deviceId)?.invoke(info, granted)
     }
 
-    /** 重新枚举当前所有 USB 设备 */
+    /**
+     * 判断设备是否为真正的 UVC 摄像头。
+     * 标准 UVC 设备必然提供一个 Video class（USB_CLASS_VIDEO=14）的接口
+     * （Video Control + Video Streaming，常伴随 Audio class=1 的麦克风接口）。
+     * 胎压监测接收器等通常是 HID(3)/CDC(2,10) 等，没有 Video 接口，据此过滤。
+     * 复合设备的 device 级 class 常为 0，因此必须检查「接口级」class 而非设备级。
+     */
+    private fun isUvcCamera(device: UsbDevice): Boolean {
+        return runCatching {
+            for (i in 0 until device.interfaceCount) {
+                if (device.getInterface(i).interfaceClass == UsbConstants.USB_CLASS_VIDEO) {
+                    return@runCatching true
+                }
+            }
+            false
+        }.getOrDefault(false)
+    }
+
+    /** 重新枚举当前所有 USB 设备（仅保留 UVC 摄像头） */
     fun refresh() {
-        val list = usbManager?.deviceList?.values
-            ?.sortedBy { it.deviceId }
-            ?.map { toInfo(it) }
-            ?: emptyList()
+        val all = usbManager?.deviceList?.values ?: emptyList()
+        val cameras = all.filter { isUvcCamera(it) }
+        val skipped = all.size - cameras.size
+        val list = cameras
+            .sortedBy { it.deviceId }
+            .map { toInfo(it) }
         _devices.update { list }
-        Logger.i(TAG, "enumerate: ${list.size} device(s)")
+        Logger.i(TAG, "enumerate: ${list.size} UVC camera(s)" +
+            (if (skipped > 0) ", skipped $skipped non-camera USB device(s)" else ""))
     }
 
     /**
@@ -249,14 +285,25 @@ class UsbMonitor(private val context: Context) {
         runCatching { connection?.close() }
     }
 
-    private fun toInfo(device: UsbDevice): UsbDeviceInfo = UsbDeviceInfo(
-        deviceId = device.deviceId,
-        vendorId = device.vendorId,
-        productId = device.productId,
-        deviceName = device.deviceName ?: "",
-        productName = device.productName,
-        manufacturerName = device.manufacturerName,
-        hasPermission = usbManager?.hasPermission(device) == true,
-        rawDevice = device
-    )
+    private fun toInfo(device: UsbDevice): UsbDeviceInfo {
+        val hasPerm = usbManager?.hasPermission(device) == true
+        // 读到序列号就锁定到缓存，避免后续偶发读取失败导致稳定标识回退
+        UsbDeviceInfo.readSerial(device)?.let { serialCache[device.deviceId] = it }
+        val serial = serialCache[device.deviceId]
+        val node = device.deviceName?.substringAfterLast('/') ?: device.deviceId.toString()
+        return UsbDeviceInfo(
+            deviceId = device.deviceId,
+            vendorId = device.vendorId,
+            productId = device.productId,
+            deviceName = device.deviceName ?: "",
+            productName = device.productName,
+            manufacturerName = device.manufacturerName,
+            hasPermission = hasPerm,
+            // 授权后序列号可读，稳定标识从总线节点切换为序列号；之后锁定不再回退
+            stableKey = UsbDeviceInfo.buildStableKey(
+                device.vendorId, device.productId, serial, node
+            ),
+            rawDevice = device
+        )
+    }
 }

@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#0e141c; overflow:hidden; }
+  #map { position:absolute; left:0; top:0; width:100%; height:100%; }
+  #schematic { position:absolute; left:0; top:0; width:100%; height:100%; }
+  #badge {
+    position:absolute; left:10px; top:8px; z-index:999;
+    font:12px/1.4 sans-serif; color:#cfe3ff;
+    background:rgba(8,16,28,.55); padding:4px 8px; border-radius:8px;
+    pointer-events:none;
+  }
+  .car {
+    width:0; height:0; margin-left:-10px; margin-top:-10px;
+    border-left:10px solid transparent; border-right:10px solid transparent;
+    border-bottom:20px solid #ff5252;
+    transform-origin:50% 85%;
+    filter:drop-shadow(0 0 4px rgba(255,82,82,.8));
+  }
+</style>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+</head>
+<body>
+  <div id="map"></div>
+  <canvas id="schematic"></canvas>
+  <div id="badge">轨迹</div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  var pts = [];
+  var leafletReady = false;
+  var map = null;
+  var fullLine = null, doneLine = null, carMarker = null;
+  var canvas = document.getElementById('schematic');
+  var ctx = canvas.getContext('2d');
+  var carIdx = 0;
+  var bounds = null;
+
+  function resize() {
+    var dpr = window.devicePixelRatio || 1;
+    var w = canvas.clientWidth, h = canvas.clientHeight;
+    canvas.width = w * dpr; canvas.height = h * dpr;
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+  window.addEventListener('resize', resize);
+
+  function setTrack(json) {
+    try { pts = JSON.parse(json) || []; } catch (e) { pts = []; }
+    carIdx = 0;
+    document.getElementById('badge').innerText =
+      pts.length ? ('轨迹 ' + pts.length + ' 点') : '本时段无 GPS 轨迹';
+    computeBounds();
+    initLeaflet();
+    resize();
+    drawSchematic();
+  }
+
+  function computeBounds() {
+    if (!pts.length) { bounds = null; return; }
+    var minLat=90,maxLat=-90,minLon=180,maxLon=-180;
+    for (var i=0;i<pts.length;i++){
+      var p=pts[i];
+      if(p.lat<minLat)minLat=p.lat; if(p.lat>maxLat)maxLat=p.lat;
+      if(p.lon<minLon)minLon=p.lon; if(p.lon>maxLon)maxLon=p.lon;
+    }
+    if (minLat===maxLat){ minLat-=0.002; maxLat+=0.002; }
+    if (minLon===maxLon){ minLon-=0.002; maxLon+=0.002; }
+    bounds={minLat:minLat,maxLat:maxLat,minLon:minLon,maxLon:maxLon};
+  }
+
+  function initLeaflet() {
+    if (!window.L || !pts.length) {
+      // 离线 / 无网络或 CDN 不可用：使用内置离线示意图
+      var el = document.getElementById('map');
+      el.style.display = 'none';
+      leafletReady = false;
+      return;
+    }
+    try {
+      if (map) { map.remove(); map = null; }
+      map = L.map('map', { zoomControl:true, attributionControl:false });
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19, opacity: 0.9
+      }).addTo(map);
+      var ll = pts.map(function(p){ return [p.lat, p.lon]; });
+      fullLine = L.polyline(ll, { color:'#5b7fa8', weight:5, opacity:0.7 }).addTo(map);
+      doneLine = L.polyline([], { color:'#1565C0', weight:6 }).addTo(map);
+      var start = L.circleMarker(ll[0], { radius:6, color:'#2e7d32', fillColor:'#2e7d32', fillOpacity:1 }).addTo(map);
+      carMarker = L.marker(ll[0], {
+        icon: L.divIcon({ className:'', html:'<div class="car" id="car"></div>',
+                         iconSize:[0,0], iconAnchor:[0,0] })
+      }).addTo(map);
+      map.fitBounds(fullLine.getBounds(), { padding:[30,30] });
+      leafletReady = true;
+    } catch (e) {
+      leafletReady = false;
+      document.getElementById('map').style.display='none';
+    }
+  }
+
+  // 按播放时间（ms）移动车标 / 已走轨迹
+  function updateTime(ms) {
+    if (!pts.length) { return; }
+    var idx = 0;
+    while (idx < pts.length - 1 && pts[idx+1].t <= ms) idx++;
+    carIdx = idx;
+    if (leafletReady) {
+      try {
+        var p = pts[idx];
+        var done = pts.slice(0, idx+1).map(function(q){ return [q.lat, q.lon]; });
+        doneLine.setLatLngs(done);
+        carMarker.setLatLng([p.lat, p.lon]);
+        var el = document.getElementById('car');
+        if (el) { el.style.transform = 'rotate(' + (p.brg||0) + 'deg)'; }
+        // 不自动跟随跳动，避免拖动查看时被拉走；由 init 时已 fitBounds
+      } catch (e) {}
+    }
+    drawSchematic();
+  }
+
+  function project(p) {
+    var w = canvas.clientWidth, h = canvas.clientHeight;
+    var pad = 26;
+    var x = pad + (p.lon - bounds.minLon) /
+              (bounds.maxLon - bounds.minLon) * (w - pad*2);
+    // 画布 y 轴向下，纬度向上，故反向
+    var y = pad + (1 - (p.lat - bounds.minLat) /
+              (bounds.maxLat - bounds.minLat)) * (h - pad*2);
+    return [x, y];
+  }
+
+  function drawSchematic() {
+    if (leafletReady) return;
+    var w = canvas.clientWidth, h = canvas.clientHeight;
+    ctx.clearRect(0,0,w,h);
+    // 深色底
+    ctx.fillStyle = '#0e141c'; ctx.fillRect(0,0,w,h);
+    if (!bounds || !pts.length) {
+      ctx.fillStyle = '#7c8aa0'; ctx.font = '14px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('本时段无 GPS 轨迹', w/2, h/2);
+      return;
+    }
+    // 网格
+    ctx.strokeStyle = 'rgba(120,150,190,.12)';
+    ctx.lineWidth = 1;
+    var g = 12;
+    for (var x=0; x<w; x+=g){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke(); }
+    for (var y=0; y<h; y+=g){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke(); }
+
+    function path(to, color, width) {
+      ctx.strokeStyle = color; ctx.lineWidth = width;
+      ctx.lineJoin='round'; ctx.lineCap='round';
+      ctx.beginPath();
+      for (var i=0;i<=to;i++){
+        var xy=project(pts[i]);
+        if (i===0) ctx.moveTo(xy[0],xy[1]); else ctx.lineTo(xy[0],xy[1]);
+      }
+      ctx.stroke();
+    }
+    path(pts.length-1, '#42556f', 5);   // 全程暗色
+    path(carIdx, '#2f90ff', 6);         // 已走高亮
+
+    // 起点/终点
+    var s = project(pts[0]);
+    ctx.fillStyle = '#2e7d32'; ctx.beginPath(); ctx.arc(s[0],s[1],5,0,Math.PI*2); ctx.fill();
+    var e = project(pts[pts.length-1]);
+    ctx.fillStyle = '#c62828'; ctx.beginPath(); ctx.arc(e[0],e[1],5,0,Math.PI*2); ctx.fill();
+
+    // 车标（朝向）
+    var c = project(pts[carIdx]);
+    ctx.save();
+    ctx.translate(c[0], c[1]);
+    ctx.rotate((pts[carIdx].brg||0) * Math.PI/180);
+    ctx.fillStyle = '#ff5252';
+    ctx.beginPath();
+    ctx.moveTo(0,-11); ctx.lineTo(8,9); ctx.lineTo(0,5); ctx.lineTo(-8,9); ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+</script>
+</body>
+</html>

@@ -619,6 +619,15 @@ class CameraSupervisor(
         }
     }
 
+    /** 设置某路实时降噪档位（0关/1弱/2中/3强，持久化，按稳定标识绑定） */
+    fun setDenoise(slot: Int, level: Int) {
+        val key = _slots.value[slot].key ?: return
+        scope.launch {
+            val cfg = configs[key] ?: DeviceConfig(key = key)
+            settings.saveDeviceConfig(cfg.copy(denoise = level.coerceIn(0, 3)))
+        }
+    }
+
     /** 手动触发一次刷新/对齐 */
     fun refresh() {
         manager.refreshDevices()

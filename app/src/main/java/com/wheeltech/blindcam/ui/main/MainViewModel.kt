@@ -8,6 +8,7 @@ import com.wheeltech.blindcam.data.AppSettings
 import com.wheeltech.blindcam.domain.CameraSupervisor
 import com.wheeltech.blindcam.domain.StreamProfile
 import com.wheeltech.blindcam.domain.UvcCameraManager
+import com.wheeltech.blindcam.recorder.BitrateAdvisor
 import com.wheeltech.blindcam.recorder.CompositeRecorder
 import com.wheeltech.blindcam.recorder.OsdRenderer
 import com.wheeltech.blindcam.usb.UsbDeviceInfo
@@ -92,6 +93,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setWarn(slot: Int, warn: Boolean) = supervisor.setWarn(slot, warn)
 
+    /** 某路实时降噪档位（0关/1弱/2中/3强） */
+    fun setDenoise(slot: Int, level: Int) = supervisor.setDenoise(slot, level)
+
     // ------------------------------------------------------------------
     // 全局设置（OSD / 预警音量）
     // ------------------------------------------------------------------
@@ -99,6 +103,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setOsdClock(v: Boolean) = viewModelScope.launch { settingsRepository.setOsdClock(v) }
     fun setOsdSpeed(v: Boolean) = viewModelScope.launch { settingsRepository.setOsdSpeed(v) }
     fun setWarnVolume(v: Int) = viewModelScope.launch { settingsRepository.setWarnVolume(v) }
+
+    // 码率 / 循环录像 / GPS 开关
+    fun setSingleBitrateQuality(v: Int) =
+        viewModelScope.launch { settingsRepository.setSingleBitrateQuality(v) }
+    fun setCompositeBitrateQuality(v: Int) =
+        viewModelScope.launch { settingsRepository.setCompositeBitrateQuality(v) }
+    fun setLoopEnabled(v: Boolean) = viewModelScope.launch { settingsRepository.setLoopEnabled(v) }
+    fun setLoopSegmentMinutes(v: Int) =
+        viewModelScope.launch { settingsRepository.setLoopSegmentMinutes(v) }
+    fun setLoopKeepFreeMb(v: Int) =
+        viewModelScope.launch { settingsRepository.setLoopKeepFreeMb(v) }
+    fun setGpsEnabled(v: Boolean) = viewModelScope.launch { settingsRepository.setGpsEnabled(v) }
+
+    /** 恢复照片 / 录像保存位置为应用默认目录 */
+    fun resetPhotoDir() = viewModelScope.launch { settingsRepository.setPhotoDirUri("") }
+    fun resetVideoDir() = viewModelScope.launch { settingsRepository.setVideoDirUri("") }
 
     // ------------------------------------------------------------------
     // 日志导出（SAF 选目录）
@@ -164,15 +184,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             val dir = settingsRepository.settings.first().photoDirUri
-            // 按该画框当前镜像/旋转设置输出（与预览所见一致）
+            // 按该画框当前镜像/旋转设置输出（与预览所见一致），文件名带设备名便于相册分类
             captureManager.takePhoto(
-                slot, dir, rt.config?.mirror ?: false, rt.config?.rotation ?: 0
+                slot, dir, displayNameOf(rt),
+                rt.config?.mirror ?: false, rt.config?.rotation ?: 0
             ) { result ->
                 result.onSuccess { emit("照片已保存：$it") }
                     .onFailure { emit("拍照失败：${it.message}") }
             }
         }
     }
+
+    /** 统一的设备显示名：自定义名优先，否则设备产品名，再否则 CAMx */
+    private fun displayNameOf(rt: CameraSupervisor.SlotRuntime): String =
+        rt.config?.name?.takeIf { it.isNotBlank() }
+            ?: rt.device?.productName?.takeIf { it.isNotBlank() }
+            ?: "CAM${rt.slot + 1}"
 
     fun toggleRecording(slot: Int) {
         if (captureManager.isRecording(slot)) {
@@ -193,13 +220,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val s = settingsRepository.settings.first()
             val cfg = rt.config
-            val displayName = cfg?.name?.takeIf { it.isNotBlank() }
-                ?: rt.device?.productName?.takeIf { it.isNotBlank() } ?: ""
+            val displayName = displayNameOf(rt)
             val osd = buildOverlay(s, displayName)
-            // 按该画框当前镜像/旋转设置输出录像（旋转 90/270 时输出宽高互换），并叠加 OSD
+            // 按该画框当前镜像/旋转设置输出录像（旋转 90/270 时输出宽高互换），并叠加 OSD；
+            // 文件名带设备名，输出通用 MP4；应用该路降噪档位与码率档位（按分辨率帧率动态计算）
+            val bitrate = BitrateAdvisor.singleBitrate(
+                profile.width, profile.height, profile.fps, s.singleBitrateQuality
+            )
             val ok = captureManager.startRecording(
                 slot, profile.width, profile.height, profile.fps, s.videoDirUri,
-                cfg?.mirror ?: false, cfg?.rotation ?: 0, osd
+                displayName, cfg?.mirror ?: false, cfg?.rotation ?: 0, osd,
+                denoiseLevel = cfg?.denoise ?: 0,
+                bitrateOverride = bitrate
             )
             if (ok) _recordingSlots.update { it + slot } else emit("录像启动失败")
         }
@@ -222,6 +254,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 总录像开关：录制所有画面（按当前 1/2/3/4 宫格合成） */
     fun toggleComposite() {
         if (captureManager.isCompositeRecording()) {
+            appContainer.gpsTracker.stop()
             captureManager.stopComposite { result ->
                 result.onSuccess { emit("总录像已保存：$it") }
                     .onFailure { emit("总录像失败：${it.message}") }
@@ -244,13 +277,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     ?: rt.device?.productName?.takeIf { it.isNotBlank() }
                     ?: "摄像头 ${rt.slot + 1}"
                 CompositeRecorder.Cell(
-                    rt.slot, name, rt.config?.mirror ?: false, rt.config?.rotation ?: 0
+                    rt.slot, name,
+                    rt.config?.mirror ?: false, rt.config?.rotation ?: 0,
+                    rt.config?.denoise ?: 0
                 )
             }
+            val compositeBitrate = BitrateAdvisor.compositeBitrate(cells.size, s.compositeBitrateQuality)
             val ok = captureManager.startComposite(
-                cells, s.osdName, s.osdClock, s.osdSpeed, s.videoDirUri
+                cells, s.osdName, s.osdClock, s.osdSpeed, s.videoDirUri,
+                bitrate = compositeBitrate,
+                loopEnabled = s.loopEnabled,
+                segmentMinutes = s.loopSegmentMinutes,
+                keepFreeMb = s.loopKeepFreeMb
             )
-            if (ok) _compositeRecording.value = true else emit("总录像启动失败")
+            if (ok) {
+                _compositeRecording.value = true
+                // 总录像开始：按开关启动 GPS 轨迹记录（与总录像同名的 .csv 轨迹文件）
+                if (s.gpsEnabled) appContainer.gpsTracker.start(s.videoDirUri)
+            } else emit("总录像启动失败")
         }
     }
 

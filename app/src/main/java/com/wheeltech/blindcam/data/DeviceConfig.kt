@@ -15,6 +15,7 @@ import org.json.JSONObject
  * @param height   选定分辨率高
  * @param fps      选定帧率（0=设备默认）
  * @param warn     该路是否开启盲区预警（移动目标红框 + 提示音）
+ * @param denoise  该路实时降噪档位（0关/1弱/2中/3强），按本画框分辨率/帧率独立处理
  */
 data class DeviceConfig(
     val key: String,
@@ -25,7 +26,8 @@ data class DeviceConfig(
     val width: Int = 0,
     val height: Int = 0,
     val fps: Int = 0,
-    val warn: Boolean = false
+    val warn: Boolean = false,
+    val denoise: Int = 0
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("order", order)
@@ -36,6 +38,7 @@ data class DeviceConfig(
         put("height", height)
         put("fps", fps)
         put("warn", warn)
+        put("denoise", denoise)
     }
 
     companion object {
@@ -48,7 +51,8 @@ data class DeviceConfig(
             width = o.optInt("width", 0),
             height = o.optInt("height", 0),
             fps = o.optInt("fps", 0),
-            warn = o.optBoolean("warn", false)
+            warn = o.optBoolean("warn", false),
+            denoise = o.optInt("denoise", 0)
         )
     }
 }

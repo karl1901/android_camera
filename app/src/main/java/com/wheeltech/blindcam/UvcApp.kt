@@ -8,6 +8,7 @@ import com.wheeltech.blindcam.data.SettingsRepository
 import com.wheeltech.blindcam.domain.CameraSupervisor
 import com.wheeltech.blindcam.domain.UvcCameraManager
 import com.wheeltech.blindcam.domain.WarningManager
+import com.wheeltech.blindcam.location.GpsTracker
 import com.wheeltech.blindcam.recorder.CaptureManager
 import com.wheeltech.blindcam.recorder.MediaSaver
 import com.wheeltech.blindcam.util.Logger
@@ -40,6 +41,8 @@ class UvcApp : Application() {
     lateinit var captureManager: CaptureManager
         private set
     lateinit var warningManager: WarningManager
+        private set
+    lateinit var gpsTracker: GpsTracker
         private set
 
     /** 应用级协程范围（常驻，随进程存活） */
@@ -79,6 +82,8 @@ class UvcApp : Application() {
         // 盲区预警：运动检测 + 红框 + 提示音，常驻帧监听
         warningManager = WarningManager(this, supervisor.slots, settingsState)
         cameraManager.addFrameListener(warningManager)
+        // 总录像 GPS 轨迹记录（仅总录像期间启动，需定位权限）
+        gpsTracker = GpsTracker(this, mediaSaver)
     }
 
     /** 应用主题模式：跟随系统 / 深色 / 浅色 / 深色+蓝色科技风 */

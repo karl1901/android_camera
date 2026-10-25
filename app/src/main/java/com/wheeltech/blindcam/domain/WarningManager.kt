@@ -37,15 +37,26 @@ class WarningManager(
         private const val GW = 64
         private const val GH = 36
         private const val PROCESS_INTERVAL_MS = 120L
-        private const val PIXEL_DIFF = 28
-        private const val MOTION_RATIO = 0.05f
-        private const val HIT_REQUIRED = 2
+        /** 单像素灰度差阈值（高于 MJPEG 压缩噪声 + 自动曝光微抖动） */
+        private const val PIXEL_DIFF = 35
+        /** 变化像素占比达到该值才算"有物体运动" */
+        private const val MOTION_RATIO = 0.06f
+        /** 连续命中次数（防止偶发噪声误报） */
+        private const val HIT_REQUIRED = 3
+        /** 启动/刚开启预警时的预热帧数（只建立基线，不判定） */
+        private const val WARMUP_FRAMES = 4
+        /** 整帧平均亮度变化超过该值视为光照跳变（开关灯/AE） */
+        private const val LIGHT_MEAN_DIFF = 18
+        /** 光照跳变时，变化像素占比超过该值（几乎全屏变化）才判定为光照而非运动 */
+        private const val LIGHT_RATIO = 0.55f
         private const val ALERT_HOLD_MS = 1500L
         private const val BEEP_INTERVAL_MS = 1200L
     }
 
     private class MotionState {
         var prev: IntArray? = null
+        var prevMean: Int = 0
+        var warmup: Int = 0
         var hits = 0
         var alertUntil = 0L
         var lastBeep = 0L
@@ -80,16 +91,52 @@ class WarningManager(
 
     private fun analyze(slot: Int, state: MotionState, jpeg: ByteArray, nowMs: Long) {
         val gray = downsampleGray(jpeg) ?: return
+        var sum = 0L
+        for (v in gray) sum += v
+        val mean = (sum / gray.size).toInt()
+
         val prev = state.prev
-        if (prev != null && prev.size == gray.size) {
-            var changed = 0
-            for (i in gray.indices) {
-                if (abs(gray[i] - prev[i]) > PIXEL_DIFF) changed++
-            }
-            val ratio = changed.toFloat() / gray.size
-            if (ratio >= MOTION_RATIO) state.hits++ else state.hits = 0
+        // 1) 预热期：只建立基线，不做任何判定（避免刚开启/画面刚稳定时误报）
+        if (prev == null || prev.size != gray.size || state.warmup < WARMUP_FRAMES) {
+            state.prev = gray
+            state.prevMean = mean
+            state.warmup++
+            state.hits = 0
+            if (state.alertUntil <= nowMs && _alerts.value[slot] == true) setAlert(slot, false)
+            return
         }
-        state.prev = gray
+
+        // 2) 帧差：统计变化像素数与平均亮度变化
+        var changed = 0
+        for (i in gray.indices) {
+            if (abs(gray[i] - prev[i]) > PIXEL_DIFF) changed++
+        }
+        val ratio = changed.toFloat() / gray.size
+        val meanDiff = abs(mean - state.prevMean)
+
+        // 3) 光照跳变抑制：整帧平均亮度大幅变化且几乎全屏都在变（开关灯/自动曝光），
+        //    不是局部物体运动，判为光照：不报警、重建基线
+        val lightingChange = meanDiff > LIGHT_MEAN_DIFF && ratio > LIGHT_RATIO
+
+        when {
+            lightingChange -> {
+                state.hits = 0
+                state.prev = gray
+                state.prevMean = mean
+            }
+            ratio >= MOTION_RATIO -> {
+                // 真实局部运动：连续命中；此时保留基线（不更新 prev），
+                // 避免运动物体被逐帧吸收，也避免静态画面的持续噪声累积成误报
+                state.hits++
+                state.prevMean = mean
+            }
+            else -> {
+                // 静态：更新基线以适应光线缓慢变化，命中清零
+                state.hits = 0
+                state.prev = gray
+                state.prevMean = mean
+            }
+        }
 
         val wasAlert = state.alertUntil > nowMs
         if (state.hits >= HIT_REQUIRED) {
@@ -97,7 +144,7 @@ class WarningManager(
             state.hits = 0
             if (!wasAlert) {
                 setAlert(slot, true)
-                Logger.i(TAG, "motion alert slot=$slot")
+                Logger.i(TAG, "motion alert slot=$slot ratio=$ratio meanDiff=$meanDiff")
             }
             maybeBeep(state)
         } else if (state.alertUntil > nowMs) {

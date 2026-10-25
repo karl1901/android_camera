@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider 路径：允许把应用私有目录下的照片/录像以 content:// 授权给系统查看器打开。
+  照片/录像都在 getExternalFilesDir(null) 的 blindcam_photos / blindcam_videos 子目录，
+  故用 external-files-path 覆盖整个外部文件根。
+-->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <external-files-path name="ext_files" path="." />
+    <files-path name="internal_files" path="." />
+    <external-path name="external" path="." />
+</paths>

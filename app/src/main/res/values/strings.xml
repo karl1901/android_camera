@@ -7,9 +7,31 @@
     <string name="btn_refresh">刷新</string>
     <string name="btn_layout">切换布局</string>
     <string name="btn_settings">设置</string>
+    <string name="btn_gallery">相册</string>
     <string name="btn_record_all">总录像</string>
     <string name="btn_fullscreen">全屏</string>
     <string name="btn_exit_fullscreen">退出全屏</string>
+
+    <!-- 相册 -->
+    <string name="common_back">返回</string>
+    <string name="gallery_title">相册</string>
+    <string name="gallery_thumb_desc">缩略图</string>
+    <string name="gallery_filter_device">设备</string>
+    <string name="gallery_filter_date">日期筛选</string>
+    <string name="gallery_filter_date_all">全部日期</string>
+    <string name="gallery_filter_date_today">今日</string>
+    <string name="gallery_filter_date_pick">选择日期…</string>
+    <string name="gallery_filter_date_fmt">日期：%1$s</string>
+    <string name="gallery_empty">暂无内容</string>
+    <string name="gallery_no_viewer">没有可打开该文件的应用</string>
+    <string name="gallery_open_with">选择打开方式</string>
+
+    <!-- 内置图片查看器 / 视频播放器 -->
+    <string name="viewer_open_failed">无法打开该文件</string>
+    <string name="player_play">播放</string>
+    <string name="player_pause">暂停</string>
+    <string name="player_rewind">快退 10 秒</string>
+    <string name="player_forward">快进 10 秒</string>
 
     <!-- 预览区 -->
     <string name="camera_unnamed">摄像头</string>
@@ -63,4 +85,17 @@
     <string name="channel_name">盲区辅助保活</string>
     <string name="channel_desc">保持 USB 摄像头预览与录像在后台运行</string>
     <string name="notification_text">盲区辅助服务运行中</string>
+
+    <!-- 相册：时间轴回看入口 -->
+    <string name="gallery_timeline">回看</string>
+
+    <!-- 录像回看页 -->
+    <string name="playback_title">录像回看</string>
+    <string name="playback_all_cells">全部画面</string>
+    <string name="playback_cell_n">画面 %1$d</string>
+    <string name="playback_fullscreen">全屏</string>
+    <string name="playback_no_content">此时间段没有视频内容</string>
+    <string name="playback_no_recording">该日期没有总录像</string>
+    <string name="playback_map_title">行车轨迹</string>
+    <string name="playback_map_hint">有 GPS 轨迹时随播放联动移动；离线时显示内置示意图，联网显示在线地图</string>
 </resources>

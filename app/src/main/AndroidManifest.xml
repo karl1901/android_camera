@@ -44,6 +44,16 @@
     <!-- Android 13+ 仅在需要写入公共媒体库时申请，当前默认私有目录存储，属预留 -->
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
 
+    <!-- ============ GPS 定位（总录像轨迹记录，运行时再申请；车机无 GPS 自动跳过） ============ -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-feature
+        android:name="android.hardware.location.gps"
+        android:required="false" />
+    <!-- 回看页在线地图瓦片（离线时自动回退内置示意图，不影响主功能） -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <application
         android:name=".UvcApp"
         android:allowBackup="true"
@@ -81,6 +91,49 @@
             android:name=".service.UvcForegroundService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!-- 内置相册：查看照片 / 分录像 / 总录像 -->
+        <activity
+            android:name=".ui.gallery.GalleryActivity"
+            android:exported="false"
+            android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/Theme.UvcBlindCam" />
+
+        <!-- 内置照片查看器（全屏缩放，不调系统看图器） -->
+        <activity
+            android:name=".ui.viewer.PhotoViewerActivity"
+            android:exported="false"
+            android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/Theme.UvcBlindCam" />
+
+        <!-- 内置视频播放器（自带控件 + 自动收起，不调系统播放器） -->
+        <activity
+            android:name=".ui.viewer.VideoPlayerActivity"
+            android:exported="false"
+            android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/Theme.UvcBlindCam" />
+
+        <!-- 录像回看页（时间轴 + 多路预览 + 轨迹地图） -->
+        <activity
+            android:name=".ui.playback.PlaybackActivity"
+            android:exported="false"
+            android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/Theme.UvcBlindCam" />
+
+        <!-- 把私有目录的照片/录像授权给系统查看器打开 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
     </application>
 

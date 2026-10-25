@@ -35,6 +35,12 @@ class SettingsRepository(private val context: Context) {
         val OSD_CLOCK = booleanPreferencesKey("osd_clock")
         val OSD_SPEED = booleanPreferencesKey("osd_speed")
         val WARN_VOLUME = intPreferencesKey("warn_volume")
+        val SINGLE_BITRATE_QUALITY = intPreferencesKey("single_bitrate_quality")
+        val COMPOSITE_BITRATE_QUALITY = intPreferencesKey("composite_bitrate_quality")
+        val LOOP_ENABLED = booleanPreferencesKey("loop_enabled")
+        val LOOP_SEGMENT_MIN = intPreferencesKey("loop_segment_min")
+        val LOOP_KEEP_FREE_MB = intPreferencesKey("loop_keep_free_mb")
+        val GPS_ENABLED = booleanPreferencesKey("gps_enabled")
     }
 
     val settings: Flow<AppSettings> = context.uvcDataStore.data.map { p ->
@@ -52,7 +58,17 @@ class SettingsRepository(private val context: Context) {
             osdName = p[Keys.OSD_NAME] ?: defaults.osdName,
             osdClock = p[Keys.OSD_CLOCK] ?: defaults.osdClock,
             osdSpeed = p[Keys.OSD_SPEED] ?: defaults.osdSpeed,
-            warnVolume = (p[Keys.WARN_VOLUME] ?: defaults.warnVolume).coerceIn(0, 100)
+            warnVolume = (p[Keys.WARN_VOLUME] ?: defaults.warnVolume).coerceIn(0, 100),
+            singleBitrateQuality = (p[Keys.SINGLE_BITRATE_QUALITY]
+                ?: defaults.singleBitrateQuality).coerceIn(0, 4),
+            compositeBitrateQuality = (p[Keys.COMPOSITE_BITRATE_QUALITY]
+                ?: defaults.compositeBitrateQuality).coerceIn(0, 4),
+            loopEnabled = p[Keys.LOOP_ENABLED] ?: defaults.loopEnabled,
+            loopSegmentMinutes = (p[Keys.LOOP_SEGMENT_MIN]
+                ?: defaults.loopSegmentMinutes).coerceIn(1, 60),
+            loopKeepFreeMb = (p[Keys.LOOP_KEEP_FREE_MB]
+                ?: defaults.loopKeepFreeMb).coerceIn(100, 50 * 1024),
+            gpsEnabled = p[Keys.GPS_ENABLED] ?: defaults.gpsEnabled
         )
     }
 
@@ -89,6 +105,16 @@ class SettingsRepository(private val context: Context) {
     suspend fun setOsdClock(v: Boolean) = edit { it[Keys.OSD_CLOCK] = v }
     suspend fun setOsdSpeed(v: Boolean) = edit { it[Keys.OSD_SPEED] = v }
     suspend fun setWarnVolume(v: Int) = edit { it[Keys.WARN_VOLUME] = v.coerceIn(0, 100) }
+    suspend fun setSingleBitrateQuality(v: Int) =
+        edit { it[Keys.SINGLE_BITRATE_QUALITY] = v.coerceIn(0, 4) }
+    suspend fun setCompositeBitrateQuality(v: Int) =
+        edit { it[Keys.COMPOSITE_BITRATE_QUALITY] = v.coerceIn(0, 4) }
+    suspend fun setLoopEnabled(v: Boolean) = edit { it[Keys.LOOP_ENABLED] = v }
+    suspend fun setLoopSegmentMinutes(v: Int) =
+        edit { it[Keys.LOOP_SEGMENT_MIN] = v.coerceIn(1, 60) }
+    suspend fun setLoopKeepFreeMb(v: Int) =
+        edit { it[Keys.LOOP_KEEP_FREE_MB] = v.coerceIn(100, 50 * 1024) }
+    suspend fun setGpsEnabled(v: Boolean) = edit { it[Keys.GPS_ENABLED] = v }
 
     /** 新增 / 更新单个摄像头配置 */
     suspend fun saveDeviceConfig(cfg: DeviceConfig) {

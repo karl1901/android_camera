@@ -59,6 +59,12 @@
             android:src="@drawable/ic_settings" />
 
         <ImageButton
+            android:id="@+id/btnGallery"
+            style="@style/BlindCam.ToolButton"
+            android:contentDescription="@string/btn_gallery"
+            android:src="@drawable/ic_gallery" />
+
+        <ImageButton
             android:id="@+id/btnRecordAll"
             style="@style/BlindCam.ToolButton"
             android:contentDescription="@string/btn_record_all"

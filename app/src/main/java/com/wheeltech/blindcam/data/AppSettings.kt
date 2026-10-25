@@ -26,7 +26,25 @@ data class AppSettings(
 
     // ===== 预警 =====
     /** 预警提示音音量（0–100） */
-    val warnVolume: Int = 70
+    val warnVolume: Int = 70,
+
+    // ===== 录像码率（0自动/1省流/2标准/3高画质/4原画，码率按分辨率帧率路数动态计算） =====
+    /** 单路（分录像）码率档位 */
+    val singleBitrateQuality: Int = 0,
+    /** 总录像（多路合成）码率档位 */
+    val compositeBitrateQuality: Int = 0,
+
+    // ===== 循环录像 =====
+    /** 总录像是否启用循环录像（分段切片 + 容量满覆盖最旧） */
+    val loopEnabled: Boolean = false,
+    /** 单段时长（分钟），到时自动切新段 */
+    val loopSegmentMinutes: Int = 3,
+    /** 保留剩余空间（MB），低于该值开始删最旧的总录像段 */
+    val loopKeepFreeMb: Int = 1024,
+
+    // ===== GPS 轨迹（总录像） =====
+    /** 总录像时记录 GPS 轨迹（需定位权限，车机无 GPS 时自动跳过） */
+    val gpsEnabled: Boolean = false
 ) {
     enum class LayoutMode { AUTO, SINGLE }
 

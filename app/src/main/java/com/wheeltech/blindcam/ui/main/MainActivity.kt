@@ -64,6 +64,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var previewController: PreviewController
     private var isFullscreen = false
     private var gridKey: String? = null
+    /** 当前设置对话框引用：保存目录变更后关闭并重新打开以刷新路径 */
+    private var settingsDialog: androidx.appcompat.app.AlertDialog? = null
 
     /** CAMERA 授权通过后待执行的动作（用于手动点未授权时先补 CAMERA） */
     private var pendingAfterCamera: (() -> Unit)? = null
@@ -89,6 +91,30 @@ class MainActivity : AppCompatActivity() {
             // 无论是否授予通知权限，都启动前台服务并继续 USB 授权
             afterNotificationPermission()
         }
+
+    /** GPS 定位权限：授权后才开启总录像轨迹；拒绝则回退开关并刷新对话框 */
+    private val locationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) {
+                lifecycleScope.launch {
+                    viewModel.setGpsEnabled(true)
+                    toast("已开启 GPS 轨迹记录")
+                    reopenSettings()
+                }
+            } else {
+                lifecycleScope.launch {
+                    viewModel.setGpsEnabled(false)
+                    toast("未授予定位权限，无法记录 GPS 轨迹")
+                    reopenSettings()
+                }
+            }
+        }
+
+    private fun hasLocationPermission(): Boolean =
+        ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+            PackageManager.PERMISSION_GRANTED
 
     /** 有 CAMERA 权限后，串行处理通知权限，再发起 USB 授权（避免多个系统弹窗互相吞掉） */
     private fun onRuntimePermissionsReady() {
@@ -123,8 +149,11 @@ class MainActivity : AppCompatActivity() {
         registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
             if (uri != null) {
                 app.mediaSaver.persistTreeUri(uri)
-                lifecycleScope.launch { app.settingsRepository.setPhotoDirUri(uri.toString()) }
-                toast("照片保存位置已更新")
+                lifecycleScope.launch {
+                    app.settingsRepository.setPhotoDirUri(uri.toString())
+                    toast("照片保存位置已更新")
+                    reopenSettings()
+                }
             }
         }
 
@@ -132,8 +161,11 @@ class MainActivity : AppCompatActivity() {
         registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
             if (uri != null) {
                 app.mediaSaver.persistTreeUri(uri)
-                lifecycleScope.launch { app.settingsRepository.setVideoDirUri(uri.toString()) }
-                toast("录像保存位置已更新")
+                lifecycleScope.launch {
+                    app.settingsRepository.setVideoDirUri(uri.toString())
+                    toast("录像保存位置已更新")
+                    reopenSettings()
+                }
             }
         }
 
@@ -231,6 +263,9 @@ class MainActivity : AppCompatActivity() {
         binding.btnRefresh.setOnClickListener { viewModel.refresh() }
         binding.btnLayout.setOnClickListener { viewModel.cycleLayout() }
         binding.btnSettings.setOnClickListener { showSettingsDialog() }
+        binding.btnGallery.setOnClickListener {
+            startActivity(android.content.Intent(this, com.wheeltech.blindcam.ui.gallery.GalleryActivity::class.java))
+        }
         binding.btnRecordAll.setOnClickListener { viewModel.toggleComposite() }
         binding.btnFullscreen.setOnClickListener { enterFullscreen() }
         binding.previewArea.setOnClickListener { if (isFullscreen) exitFullscreen() }
@@ -279,11 +314,33 @@ class MainActivity : AppCompatActivity() {
         renderDeviceChips()
     }
 
-    /** 总录像按钮：录制中红底高亮 */
+    /** 总录像按钮默认外观（录制前缓存，停止时恢复） */
+    private var recordAllDefaultTint: ColorStateList? = null
+    private var recordAllDefaultBg: android.graphics.drawable.Drawable? = null
+
+    /**
+     * 总录像按钮：录制中切换为与单路录像按钮一致的"红底 + 白色停止方块"，
+     * 停止后恢复顶部工具按钮的无边框外观，给用户明确的录制正反馈。
+     */
     private fun renderRecordAllButton(recording: Boolean) {
-        binding.btnRecordAll.backgroundTintList =
-            if (recording) ColorStateList.valueOf(ContextCompat.getColor(this, R.color.status_err))
-            else null
+        binding.btnRecordAll.apply {
+            // 首次进入时缓存默认背景（无边框 ripple）与图标着色
+            if (recordAllDefaultBg == null) {
+                recordAllDefaultBg = background?.constantState?.newDrawable()
+                recordAllDefaultTint = imageTintList
+            }
+            if (recording) {
+                setImageResource(R.drawable.ic_stop)
+                setBackgroundResource(R.drawable.bg_capture_button)
+                backgroundTintList = ColorStateList.valueOf(Color.parseColor("#E53935"))
+                imageTintList = ColorStateList.valueOf(Color.WHITE)
+            } else {
+                setImageResource(R.drawable.ic_videocam)
+                recordAllDefaultBg?.let { background = it.constantState?.newDrawable() }
+                backgroundTintList = null
+                imageTintList = recordAllDefaultTint
+            }
+        }
     }
 
     /** 网格单元格：返回 (row, col, rowSpan, colSpan) */
@@ -340,9 +397,10 @@ class MainActivity : AppCompatActivity() {
             panel.lastKey = rt.key
         }
 
-        // 镜像 / 旋转（直接应用到渲染器，状态持久化）
+        // 镜像 / 旋转 / 每路降噪（直接应用到渲染器，状态持久化）
         panel.renderer.mirrorH = cfg?.mirror ?: false
         panel.renderer.rotationDegrees = cfg?.rotation ?: 0
+        panel.renderer.denoiseLevel = cfg?.denoise ?: 0
         val primary = themeColor(com.google.android.material.R.attr.colorPrimary)
         panel.ui.btnMirror.backgroundTintList =
             if (cfg?.mirror == true) ColorStateList.valueOf(primary)
@@ -544,7 +602,6 @@ class MainActivity : AppCompatActivity() {
             container.addView(itemLabel("在录像画面上显示的信息（单路与总录像均生效）"))
             container.addView(checkBox("左上角显示自定义名称", s.osdName) { viewModel.setOsdName(it) })
             container.addView(checkBox("右上角显示系统时间", s.osdClock) { viewModel.setOsdClock(it) })
-            container.addView(checkBox("左下角显示车速（需车速数据源，当前为预留）", s.osdSpeed) { viewModel.setOsdSpeed(it) })
 
             // ================= 分类 3：盲区预警 =================
             container.addView(sectionLabel("盲区预警"))
@@ -593,19 +650,122 @@ class MainActivity : AppCompatActivity() {
             volumeRow.addView(volValue)
             container.addView(volumeRow)
 
+            // ================= 分类：实时降噪（每路独立） =================
+            container.addView(sectionLabel("实时降噪（每路独立）"))
+            container.addView(itemLabel("为每个画框单独设置，按该画框分辨率/帧率实时处理，4K 自动降负载，弱档即可明显压噪"))
+            if (warnSlots.isEmpty()) {
+                container.addView(itemLabel("暂无已接入摄像头，接入后可在此设置对应画面降噪"))
+            } else {
+                warnSlots.forEach { rt ->
+                    val dLabel = rt.config?.name?.takeIf { it.isNotBlank() }
+                        ?: rt.device?.productName?.takeIf { it.isNotBlank() }
+                        ?: "摄像头 ${rt.slot + 1}"
+                    container.addView(itemLabel("画面 ${rt.slot + 1}：$dLabel"))
+                    container.addView(
+                        denoiseLevelRow(rt.config?.denoise ?: 0) { lvl ->
+                            viewModel.setDenoise(rt.slot, lvl)
+                        }
+                    )
+                }
+            }
+
+            // ================= 分类：录像码率（按分辨率/帧率/路数动态） =================
+            container.addView(sectionLabel("录像码率与画质"))
+            container.addView(itemLabel("单路分录像：码率随该画框分辨率/帧率自动计算（自动≈高画质，1080p30 约 9Mbps、4K30 约 37Mbps）"))
+            container.addView(
+                segmentRow(
+                    listOf("自动", "省流", "标准", "高画质", "原画"),
+                    s.singleBitrateQuality
+                ) { viewModel.setSingleBitrateQuality(it) }
+            )
+            container.addView(itemLabel("总录像：按合成画面路数自动计算（多路网格适当提高码率保证每格清晰）"))
+            container.addView(
+                segmentRow(
+                    listOf("自动", "省流", "标准", "高画质", "原画"),
+                    s.compositeBitrateQuality
+                ) { viewModel.setCompositeBitrateQuality(it) }
+            )
+
+            // ================= 分类：循环录像（总录像，外置存储满覆盖） =================
+            container.addView(sectionLabel("循环录像（总录像）"))
+            container.addView(
+                checkBox("开启循环录像（分段存储，空间不足时自动覆盖最旧总录像）", s.loopEnabled) {
+                    viewModel.setLoopEnabled(it)
+                    reopenSettings()
+                }
+            )
+            if (s.loopEnabled) {
+                container.addView(itemLabel("单段时长（到点自动切下一段，便于覆盖与回看）"))
+                val segLabels = listOf("1分钟", "3分钟", "5分钟", "10分钟")
+                val segValues = listOf(1, 3, 5, 10)
+                val segIdx = segValues.indexOf(s.loopSegmentMinutes).let { if (it < 0) 1 else it }
+                container.addView(segmentRow(segLabels, segIdx) {
+                    viewModel.setLoopSegmentMinutes(segValues[it])
+                })
+                container.addView(itemLabel("保留剩余空间（低于该值开始删除最旧的总录像段）"))
+                val freeLabels = listOf("512MB", "1GB", "2GB", "5GB")
+                val freeValues = listOf(512, 1024, 2048, 5120)
+                val freeIdx = freeValues.indexOf(s.loopKeepFreeMb).let { if (it < 0) 1 else it }
+                container.addView(segmentRow(freeLabels, freeIdx) {
+                    viewModel.setLoopKeepFreeMb(freeValues[it])
+                })
+            }
+
+            // ================= 分类：GPS 轨迹（总录像） =================
+            container.addView(sectionLabel("GPS 轨迹（总录像）"))
+            container.addView(itemLabel("开启后总录像时记录行车轨迹，回看页可联动地图；车机无 GPS 时自动跳过"))
+            container.addView(
+                checkBox("总录像记录 GPS 轨迹", s.gpsEnabled) { checked ->
+                    if (checked) {
+                        if (hasLocationPermission()) {
+                            viewModel.setGpsEnabled(true)
+                        } else {
+                            // 先申请定位权限，授权后才真正开启
+                            locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                        }
+                    } else {
+                        viewModel.setGpsEnabled(false)
+                    }
+                }
+            )
+
             // ================= 分类 4：保存位置 =================
             container.addView(sectionLabel("保存位置"))
+            // 照片：显示完整路径，点击重选；自定义时提供恢复默认
             container.addView(itemLabel(getString(R.string.settings_photo_dir)))
-            container.addView(actionRow(if (s.photoDirUri.isBlank()) getString(R.string.dir_default) else getString(R.string.dir_choose)) { photoDirLauncher.launch(null) })
+            container.addView(dirPathRow(app.mediaSaver.photoDisplayPath(s.photoDirUri)) {
+                photoDirLauncher.launch(null)
+            })
+            if (s.photoDirUri.isNotBlank()) {
+                container.addView(resetRow("恢复为应用默认目录") {
+                    lifecycleScope.launch {
+                        viewModel.resetPhotoDir()
+                        toast("已恢复默认目录")
+                        reopenSettings()
+                    }
+                })
+            }
+            // 录像：显示完整路径，点击重选；自定义时提供恢复默认
             container.addView(itemLabel(getString(R.string.settings_video_dir)))
-            container.addView(actionRow(if (s.videoDirUri.isBlank()) getString(R.string.dir_default) else getString(R.string.dir_choose)) { videoDirLauncher.launch(null) })
+            container.addView(dirPathRow(app.mediaSaver.videoDisplayPath(s.videoDirUri)) {
+                videoDirLauncher.launch(null)
+            })
+            if (s.videoDirUri.isNotBlank()) {
+                container.addView(resetRow("恢复为应用默认目录") {
+                    lifecycleScope.launch {
+                        viewModel.resetVideoDir()
+                        toast("已恢复默认目录")
+                        reopenSettings()
+                    }
+                })
+            }
 
             // ================= 分类 5：日志与排查 =================
             container.addView(sectionLabel("日志与排查"))
             container.addView(itemLabel("出现问题时导出全部运行日志，可发送给开发者排查"))
             container.addView(actionRow("导出运行日志（手动选择文件夹）") { logDirLauncher.launch(null) })
 
-            AlertDialog.Builder(this@MainActivity)
+            settingsDialog = AlertDialog.Builder(this@MainActivity)
                 .setTitle(R.string.settings_title)
                 .setView(scroll)
                 .setPositiveButton(R.string.common_confirm) { _, _ ->
@@ -622,8 +782,15 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 .setNegativeButton(R.string.common_cancel, null)
+                .setOnDismissListener { settingsDialog = null }
                 .show()
         }
+    }
+
+    /** 保存目录变更后：关闭并重新打开设置对话框，刷新显示的完整路径 */
+    private fun reopenSettings() {
+        settingsDialog?.dismiss()
+        showSettingsDialog()
     }
 
     private fun sectionLabel(text: String): TextView =
@@ -654,6 +821,32 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { onClick() }
         }
 
+    /** 保存目录路径行：完整显示绝对路径，可换行，点击重选 */
+    private fun dirPathRow(path: String, onClick: () -> Unit): TextView =
+        TextView(this).apply {
+            text = "📁  $path\n点击可更改"
+            setTextColor(themeColor(com.google.android.material.R.attr.colorOnSurface))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            typeface = android.graphics.Typeface.MONOSPACE
+            background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_chip)
+            setPadding(dp(14), dp(8), dp(14), dp(8))
+            setLineSpacing(dp(2).toFloat(), 1f)
+            isClickable = true
+            setOnClickListener { onClick() }
+        }
+
+    /** 恢复默认目录的小按钮 */
+    private fun resetRow(text: String, onClick: () -> Unit): TextView =
+        TextView(this).apply {
+            this.text = text
+            gravity = android.view.Gravity.END
+            setTextColor(themeColor(R.attr.onSurfaceDim))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setPadding(0, dp(2), dp(4), dp(8))
+            isClickable = true
+            setOnClickListener { onClick() }
+        }
+
     /** 设置页复选框：先设初始值再绑监听，避免初始化触发写入 */
     private fun checkBox(text: String, checked: Boolean, onChange: (Boolean) -> Unit): CheckBox =
         CheckBox(this).apply {
@@ -664,6 +857,52 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, dp(6), 0, dp(6))
             setOnCheckedChangeListener { _, b -> onChange(b) }
         }
+
+    /**
+     * 分段选择行：等分的若干标签按钮，选中项高亮（主色），点击立即写入并就地刷新，
+     * 不重建对话框、不滚回顶部。用于降噪档位、码率档位、循环时长等离散选择。
+     */
+    private fun segmentRow(labels: List<String>, selected: Int, onSelect: (Int) -> Unit): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(2), 0, dp(8))
+        }
+        val chips = ArrayList<TextView>(labels.size)
+        val primary = themeColor(com.google.android.material.R.attr.colorPrimary)
+        val onSurface = themeColor(com.google.android.material.R.attr.colorOnSurface)
+        fun refresh(sel: Int) {
+            chips.forEachIndexed { i, tv ->
+                tv.setTextColor(if (i == sel) Color.WHITE else onSurface)
+                tv.backgroundTintList = if (i == sel)
+                    ColorStateList.valueOf(primary) else null
+            }
+        }
+        labels.forEachIndexed { i, lab ->
+            val tv = TextView(this).apply {
+                text = lab
+                textSize = 13f
+                gravity = android.view.Gravity.CENTER
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+                background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_chip)
+                isClickable = true
+                setOnClickListener {
+                    onSelect(i)
+                    refresh(i)
+                }
+            }
+            val lp = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(8)
+            }
+            row.addView(tv, lp)
+            chips.add(tv)
+        }
+        refresh(selected)
+        return row
+    }
+
+    /** 降噪档位选择行：关闭 / 弱 / 中 / 强 */
+    private fun denoiseLevelRow(current: Int, onSelect: (Int) -> Unit): LinearLayout =
+        segmentRow(listOf("关闭", "弱", "中", "强"), current.coerceIn(0, 3), onSelect)
 
     // ------------------------------------------------------------------
     // 异形屏 / 刘海 / 圆角 / 圆形屏适配

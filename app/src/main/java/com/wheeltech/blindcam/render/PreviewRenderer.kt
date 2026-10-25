@@ -8,6 +8,7 @@ import android.graphics.PorterDuff
 import android.graphics.SurfaceTexture
 import android.view.Surface
 import android.view.TextureView
+import com.wheeltech.blindcam.imaging.FrameDenoiser
 import com.wheeltech.blindcam.util.Logger
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -32,6 +33,16 @@ class PreviewRenderer(
     @Volatile var mirrorH: Boolean = false
     @Volatile var flipV: Boolean = false
     @Volatile var rotationDegrees: Int = 0
+
+    /** 本路独立的多帧时域降噪器（按本画框分辨率/帧率自适应），仅在本路渲染线程使用 */
+    private val denoiser = FrameDenoiser(0)
+
+    /** 本路降噪档位（0关/1弱/2中/3强），由设置持久化并随槽位绑定 */
+    var denoiseLevel: Int = 0
+        set(v) {
+            field = v
+            denoiser.setLevel(v)
+        }
 
     private val painting = AtomicBoolean(false)
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
@@ -69,6 +80,8 @@ class PreviewRenderer(
 
         var canvas: Canvas? = null
         try {
+            // 本路实时降噪（多帧时域，按本画框分辨率/帧率自适应）；关闭时返回原图
+            val src = if (denoiser.enabled) denoiser.process(bitmap) else bitmap
             // 优先硬件 Canvas（API23+），车机系统较老时回退软件 Canvas
             canvas = if (android.os.Build.VERSION.SDK_INT >= 23) {
                 currentSurface.lockHardwareCanvas()
@@ -83,9 +96,9 @@ class PreviewRenderer(
             if (vw == 0f || vh == 0f) return
 
             // 等比缩放（centerCrop）
-            val scale = maxOf(vw / bitmap.width, vh / bitmap.height)
-            val dx = (vw - bitmap.width * scale) / 2f
-            val dy = (vh - bitmap.height * scale) / 2f
+            val scale = maxOf(vw / src.width, vh / src.height)
+            val dx = (vw - src.width * scale) / 2f
+            val dy = (vh - src.height * scale) / 2f
             matrix.postScale(scale, scale)
             matrix.postTranslate(dx, dy)
 
@@ -97,7 +110,7 @@ class PreviewRenderer(
             if (mirrorH) matrix.postScale(-1f, 1f, vw / 2f, vh / 2f)
             if (flipV) matrix.postScale(1f, -1f, vw / 2f, vh / 2f)
 
-            canvas.drawBitmap(bitmap, matrix, paint)
+            canvas.drawBitmap(src, matrix, paint)
         } catch (t: Throwable) {
             Logger.w(TAG, "draw frame failed: ${t.message}")
         } finally {
@@ -131,5 +144,6 @@ class PreviewRenderer(
 
     fun release() {
         surface = null
+        denoiser.release()
     }
 }

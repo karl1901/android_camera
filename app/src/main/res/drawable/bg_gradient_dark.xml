@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  深邃暗色背景：深紫 #2C1B4D → 深蓝 #100B21 对角渐变。
+  叠一层极淡的径向高光（用第二个 gradient 模拟），增加空间层次。
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="135"
+                android:startColor="#FF2C1B4D"
+                android:centerColor="#FF171033"
+                android:endColor="#FF100B21"
+                android:type="linear" />
+        </shape>
+    </item>
+    <!-- 顶部微弱紫色辉光 -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="270"
+                android:startColor="#33FFFFFF"
+                android:endColor="#00000000"
+                android:type="linear" />
+        </shape>
+    </item>
+</layer-list>

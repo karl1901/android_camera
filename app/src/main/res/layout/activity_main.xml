@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  主界面（横屏车机，适配多种屏幕）
-  - 顶部工具栏（全屏时隐藏）：一键授权 / 刷新 / 布局 / 设置 / 全屏
+  主界面（横屏车机，深色玻璃拟态，适配多种屏幕）
+  - 顶部工具栏（全屏时隐藏）：一键授权 / 刷新 / 布局 / 设置 / 相册 / 总录像 / 全屏
   - 中部：GridLayout 动态 1/2/3/4 宫格预览，面板由代码动态加入
   - 底部设备栏（全屏时隐藏）：已连接摄像头与授权状态，可点未授权项手动授权
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="?android:colorBackground"
+    android:background="@drawable/bg_gradient_dark"
     android:orientation="vertical">
 
     <!-- ============ 顶部工具栏 ============ -->
@@ -16,64 +16,76 @@
         android:id="@+id/barTop"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="?attr/appBar"
-        android:elevation="4dp"
+        android:background="@drawable/bg_glass_bar"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:paddingStart="16dp"
-        android:paddingTop="6dp"
-        android:paddingEnd="10dp"
-        android:paddingBottom="6dp">
+        android:paddingTop="8dp"
+        android:paddingEnd="12dp"
+        android:paddingBottom="8dp">
 
         <TextView
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
             android:text="@string/app_title"
-            android:textColor="?attr/colorOnSurface"
-            android:textSize="18sp"
-            android:textStyle="bold" />
+            android:textColor="#FFFFFF"
+            android:textSize="19sp" />
 
         <ImageButton
             android:id="@+id/btnGrant"
             style="@style/BlindCam.ToolButton"
+            android:background="@drawable/bg_play_badge"
             android:contentDescription="@string/btn_grant_all"
+            android:tint="#FFFFFF"
             android:src="@drawable/ic_key" />
 
         <ImageButton
             android:id="@+id/btnRefresh"
             style="@style/BlindCam.ToolButton"
+            android:background="@drawable/bg_play_badge"
             android:contentDescription="@string/btn_refresh"
+            android:tint="#FFFFFF"
             android:src="@drawable/ic_refresh" />
 
         <ImageButton
             android:id="@+id/btnLayout"
             style="@style/BlindCam.ToolButton"
+            android:background="@drawable/bg_play_badge"
             android:contentDescription="@string/btn_layout"
+            android:tint="#FFFFFF"
             android:src="@drawable/ic_layout" />
 
         <ImageButton
             android:id="@+id/btnSettings"
             style="@style/BlindCam.ToolButton"
+            android:background="@drawable/bg_play_badge"
             android:contentDescription="@string/btn_settings"
+            android:tint="#FFFFFF"
             android:src="@drawable/ic_settings" />
 
         <ImageButton
             android:id="@+id/btnGallery"
             style="@style/BlindCam.ToolButton"
+            android:background="@drawable/bg_play_badge"
             android:contentDescription="@string/btn_gallery"
+            android:tint="#FFFFFF"
             android:src="@drawable/ic_gallery" />
 
         <ImageButton
             android:id="@+id/btnRecordAll"
             style="@style/BlindCam.ToolButton"
+            android:background="@drawable/bg_play_badge"
             android:contentDescription="@string/btn_record_all"
+            android:tint="#FFFFFF"
             android:src="@drawable/ic_videocam" />
 
         <ImageButton
             android:id="@+id/btnFullscreen"
             style="@style/BlindCam.ToolButton"
+            android:background="@drawable/bg_play_badge"
             android:contentDescription="@string/btn_fullscreen"
+            android:tint="#FFFFFF"
             android:src="@drawable/ic_fullscreen" />
     </LinearLayout>
 
@@ -99,8 +111,8 @@
             android:layout_gravity="center"
             android:gravity="center"
             android:text="@string/no_device"
-            android:textColor="#88FFFFFF"
-            android:textSize="16sp"
+            android:textColor="#CCFFFFFF"
+            android:textSize="17sp"
             android:visibility="gone" />
     </FrameLayout>
 
@@ -109,8 +121,7 @@
         android:id="@+id/barBottom"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="?attr/appBar"
-        android:elevation="4dp"
+        android:background="@drawable/bg_glass_bar"
         android:scrollbars="none">
 
         <LinearLayout

@@ -69,7 +69,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ------------------------------------------------------------------
     // 授权
     // ------------------------------------------------------------------
-    fun grantAll() = supervisor.grantAll()
+    fun grantAll() = supervisor.grantAll(manual = false)
+    /** 用户主动点击钥匙图标：绕过自动去重，始终重新弹窗；全部已授权时提示 */
+    fun grantAllManual() = supervisor.grantAll(manual = true)
     fun grant(deviceId: Int) = supervisor.grant(deviceId)
     fun refresh() = supervisor.refresh()
     fun retrySlot(slot: Int) = supervisor.retrySlot(slot)

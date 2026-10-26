@@ -86,6 +86,11 @@
                 android:resource="@xml/usb_device_filter" />
         </activity>
 
+        <!-- 高德地图 API Key（仅用免费测试能力） -->
+        <meta-data
+            android:name="com.amap.api.v2.apikey"
+            android:value="6533b39bf5df2a04a3e559c0415732f7" />
+
         <!-- 前台保活服务：类型 connectedDevice（USB 外设），不声明 camera 类型以避免强制 CAMERA 权限 -->
         <service
             android:name=".service.UvcForegroundService"
@@ -119,6 +124,14 @@
         <!-- 录像回看页（时间轴 + 多路预览 + 轨迹地图） -->
         <activity
             android:name=".ui.playback.PlaybackActivity"
+            android:exported="false"
+            android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:theme="@style/Theme.UvcBlindCam" />
+
+        <!-- 独立设置页 -->
+        <activity
+            android:name=".ui.settings.SettingsActivity"
             android:exported="false"
             android:screenOrientation="landscape"
             android:configChanges="orientation|screenSize|keyboardHidden"

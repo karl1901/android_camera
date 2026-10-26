@@ -44,6 +44,8 @@ class UvcApp : Application() {
         private set
     lateinit var gpsTracker: GpsTracker
         private set
+    lateinit var visionEngine: com.wheeltech.blindcam.vision.SmartVisionEngine
+        private set
 
     /** 应用级协程范围（常驻，随进程存活） */
     val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -64,6 +66,11 @@ class UvcApp : Application() {
         super.onCreate()
         Logger.init(this)
         Logger.i("app", "UvcApp onCreate")
+        // 高德 SDK 隐私合规：使用任何地图接口前必须先调用（否则 errorCode 555570、地图不渲染）
+        runCatching {
+            com.amap.api.maps.MapsInitializer.updatePrivacyShow(this, true, true)
+            com.amap.api.maps.MapsInitializer.updatePrivacyAgree(this, true)
+        }
         settingsRepository = SettingsRepository(this)
         // 启动即应用主题（必须在 Activity 创建前设置夜间模式）
         runCatching {
@@ -84,6 +91,9 @@ class UvcApp : Application() {
         cameraManager.addFrameListener(warningManager)
         // 总录像 GPS 轨迹记录（仅总录像期间启动，需定位权限）
         gpsTracker = GpsTracker(this, mediaSaver)
+        // 智能视觉引擎（分级推理/INT8/主路优先/丢帧/热降级；无模型时回退运动检测）
+        visionEngine = com.wheeltech.blindcam.vision.SmartVisionEngine(this)
+        visionEngine.start()
     }
 
     /** 应用主题模式：跟随系统 / 深色 / 浅色 / 深色+蓝色科技风 */

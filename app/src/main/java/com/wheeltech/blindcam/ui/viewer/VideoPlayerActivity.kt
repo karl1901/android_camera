@@ -38,6 +38,12 @@ class VideoPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
     private var seekToMs = 0
     private var isSeeking = false
 
+    // 裁剪（回看全屏跟随某一路）：视频像素坐标；cropW<=0 表示整段
+    private var cropX = 0
+    private var cropY = 0
+    private var cropW = 0
+    private var cropH = 0
+
     /** 控件自动收起：进入显示 1 秒；播放中无操作 2 秒收起；暂停时常驻 */
     private val hideRunnable = Runnable { if (isPlayingNow()) hideControls() }
     private val progressRunnable = object : Runnable {
@@ -64,6 +70,10 @@ class VideoPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
         setContentView(binding.root)
 
         binding.tvName.text = intent.getStringExtra(EXTRA_NAME).orEmpty()
+        cropX = intent.getIntExtra(EXTRA_CROP_X, 0)
+        cropY = intent.getIntExtra(EXTRA_CROP_Y, 0)
+        cropW = intent.getIntExtra(EXTRA_CROP_W, 0)
+        cropH = intent.getIntExtra(EXTRA_CROP_H, 0)
         binding.btnBack.setOnClickListener { finish() }
         binding.videoView.surfaceTextureListener = this
 
@@ -134,18 +144,29 @@ class VideoPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
         }
     }
 
-    /** 按视频原始比例居中适配（fitCenter），TextureView 铺满视图，画面不变形、留黑边 */
+    /**
+     * 画面几何：
+     * - 有裁剪（回看全屏跟随某一路）：把该裁剪区域放大到整个视图（像素矩阵）
+     * - 无裁剪：按视频原始比例居中适配（fitCenter），画面不变形、留黑边
+     */
     private fun applyVideoTransform(videoW: Int, videoH: Int) {
         if (videoW <= 0 || videoH <= 0) return
         val viewW = binding.videoView.width.toFloat()
         val viewH = binding.videoView.height.toFloat()
         if (viewW <= 0 || viewH <= 0) return
         val m = Matrix()
-        val s = minOf(viewW / videoW, viewH / videoH)
-        val scaledW = videoW * s
-        val scaledH = videoH * s
-        m.setScale(scaledW / viewW, scaledH / viewH)
-        m.postTranslate((viewW - scaledW) / 2f, (viewH - scaledH) / 2f)
+        if (cropW > 0 && cropH > 0) {
+            val sx = videoW.toFloat() / cropW
+            val sy = videoH.toFloat() / cropH
+            m.setScale(sx, sy)
+            m.postTranslate(-cropX * viewW / cropW, -cropY * viewH / cropH)
+        } else {
+            val s = minOf(viewW / videoW, viewH / videoH)
+            val scaledW = videoW * s
+            val scaledH = videoH * s
+            m.setScale(scaledW / viewW, scaledH / viewH)
+            m.postTranslate((viewW - scaledW) / 2f, (viewH - scaledH) / 2f)
+        }
         binding.videoView.setTransform(m)
     }
 
@@ -247,5 +268,9 @@ class VideoPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
         const val EXTRA_URI = "extra_uri"
         const val EXTRA_NAME = "extra_name"
         const val EXTRA_TIME_MS = "extra_time_ms"
+        const val EXTRA_CROP_X = "extra_crop_x"
+        const val EXTRA_CROP_Y = "extra_crop_y"
+        const val EXTRA_CROP_W = "extra_crop_w"
+        const val EXTRA_CROP_H = "extra_crop_h"
     }
 }

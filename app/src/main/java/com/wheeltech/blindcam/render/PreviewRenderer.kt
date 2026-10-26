@@ -2,148 +2,258 @@ package com.wheeltech.blindcam.render
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Matrix
+import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.PorterDuff
-import android.graphics.SurfaceTexture
+import android.os.Handler
+import android.os.HandlerThread
 import android.view.Surface
 import android.view.TextureView
 import com.wheeltech.blindcam.imaging.FrameDenoiser
 import com.wheeltech.blindcam.util.Logger
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
- * 渲染模块：把 MJPEG 解码后的 Bitmap 绘制到 [TextureView] 的 Surface。
+ * 单路预览渲染器：把 MJPEG 解码后的位图绘制到 [TextureView]。
  *
- * - 支持水平镜像（mirrorH，盲区摄像头必备）、垂直翻转（flipV）
- * - TextureView 内置 transform Matrix 也可以做镜像，但为了给后续
- *   OpenGL 畸变矫正 / 全景拼接预留通道，这里统一走 Canvas 绘制矩阵，
- *   后期替换为 GLSurfaceView 时只改本类内部实现
- * - 内置简单丢帧保护：上一帧还没绘制完，直接丢弃新帧
- *
- * 注意：本类为第一阶段 Canvas 实现，OpenGL 通道在扩展阶段替换。
+ * 关键性能修复（降噪不再卡死）：
+ * - 降噪开关时，[submitBitmap] 立即返回，绝不阻塞帧投递/解码线程；
+ *   降噪在每路独立的 HandlerThread 上执行，latest-only（忙时只保留最新帧，不排队）。
+ * - 双缓冲输入位图：被降噪线程处理或已排队的缓冲不会被覆盖，避免撕裂。
+ * - 降噪最粗块仍超预算时，临时回退「直接画原图」（raw fallback），保证预览永远流动、
+ *   画面永不冻结；每隔一小段时间再尝试恢复降噪。
+ * - 降噪关闭时零拷贝、直接绘制（与旧行为一致）。
  */
 class PreviewRenderer(
-    private val textureView: TextureView
+    private val textureView: TextureView,
+    mirrorHInit: Boolean = false
 ) {
     companion object {
-        private const val TAG = "render"
+        private const val TAG = "preview"
+        private const val RAW_FALLBACK_MS = 1200L
+        private val seq = java.util.concurrent.atomic.AtomicInteger(0)
     }
 
-    @Volatile var mirrorH: Boolean = false
-    @Volatile var flipV: Boolean = false
+    private val instanceId = seq.getAndIncrement()
+
+    /** 水平镜像（外部可读写，状态持久化） */
+    @Volatile var mirrorH: Boolean = mirrorHInit
+    /** 旋转角度（0/90/180/270，外部可读写） */
     @Volatile var rotationDegrees: Int = 0
 
-    /** 本路独立的多帧时域降噪器（按本画框分辨率/帧率自适应），仅在本路渲染线程使用 */
-    private val denoiser = FrameDenoiser(0)
+    private val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
 
-    /** 本路降噪档位（0关/1弱/2中/3强），由设置持久化并随槽位绑定 */
-    var denoiseLevel: Int = 0
-        set(v) {
-            field = v
-            denoiser.setLevel(v)
-        }
-
+    /** 绘制并发保护：同一时刻只允许一个线程画该 surface */
     private val painting = AtomicBoolean(false)
-    private val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
-    private val matrix = Matrix()
 
-    private var surface: Surface? = null
+    @Volatile private var denoiseLevel = 0
+    private var denoiser: FrameDenoiser? = null
+    private var dnThread: HandlerThread? = null
+    private var dnHandler: Handler? = null
 
-    init {
-        textureView.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-            override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) {
-                surface = Surface(st)
-                Logger.i(TAG, "surface available ${w}x${h}")
-            }
+    // 双缓冲输入
+    private var srcA: Bitmap? = null
+    private var srcB: Bitmap? = null
+    private var bufW = 0
+    private var bufH = 0
 
-            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) = Unit
+    /** 待处理的输入缓冲（latest-only） */
+    private val pending = AtomicReference<Bitmap?>(null)
+    /** 降噪线程正在处理的缓冲 */
+    private val inUse = AtomicReference<Bitmap?>(null)
+    private val scheduled = AtomicBoolean(false)
 
-            override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
-                surface = null
-                return true
-            }
+    /** 原图回退截止时间（毫秒） */
+    @Volatile private var rawFallbackUntil = 0L
 
-            override fun onSurfaceTextureUpdated(st: SurfaceTexture) = Unit
+    fun setDenoiseLevel(level: Int) {
+        val l = level.coerceIn(0, 3)
+        if (l == denoiseLevel) return
+        denoiseLevel = l
+        if (l == 0) {
+            // 关闭：释放降噪资源（当前帧之后直接画原图）
+            pending.set(null)
+            denoiser?.release()
+            denoiser = null
+            srcA?.recycle(); srcB?.recycle()
+            srcA = null; srcB = null
+            bufW = 0; bufH = 0
+        } else {
+            denoiser?.setLevel(l)
         }
     }
 
     /**
-     * 提交一帧；native 线程调用。
-     * 必须在回调线程完成解码（耗时工作），这里只做绘制。
+     * 提交一帧（MJPEG 解码后）。
+     * 降噪关闭或处于回退窗口：直接画。
+     * 降噪开启：拷贝到空闲缓冲并投递，立即返回（不阻塞调用线程）。
      */
-    fun submitBitmap(bitmap: Bitmap) {
-        val currentSurface = surface
-        if (currentSurface == null || textureView.surfaceTexture == null) return
-        // 丢帧保护：上一帧绘制未完成，跳过本帧
-        if (!painting.compareAndSet(false, true)) return
+    fun submitBitmap(bmp: Bitmap) {
+        val l = denoiseLevel
+        if (l == 0 || System.currentTimeMillis() < rawFallbackUntil) {
+            drawDirect(bmp)
+            return
+        }
+        ensureBuffers(bmp.width, bmp.height, l)
 
-        var canvas: Canvas? = null
+        // 选一个既不在处理、也不在排队的缓冲
+        val using = inUse.get()
+        val queued = pending.get()
+        val target: Bitmap? = when {
+            srcA !== using && srcA !== queued -> srcA
+            srcB !== using && srcB !== queued -> srcB
+            else -> null // 一个在处理、一个在排队：丢弃本帧（latest-only）
+        }
+        if (target == null) return
+        copyInto(target, bmp)
+        pending.set(target)
+        if (scheduled.compareAndSet(false, true)) {
+            dnHandler?.post { processTask() }
+        }
+    }
+
+    /** 把当前帧像素拷贝到内部缓冲（同尺寸，纯绘制，不阻塞） */
+    private fun copyInto(target: Bitmap, src: Bitmap) {
+        val c = Canvas(target)
+        c.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+        c.drawBitmap(src, 0f, 0f, paint)
+    }
+
+    /** 从 TextureView 的 SurfaceTexture 建立绘制 Surface（懒创建，随视图生命周期复用） */
+    private var drawSurface: Surface? = null
+    private fun obtainSurface(): Surface? {
+        val st = textureView.surfaceTexture ?: return null
+        if (drawSurface == null) drawSurface = Surface(st)
+        return drawSurface
+    }
+
+    private fun processTask() {
+        val src = pending.getAndSet(null)
+        if (src == null) {
+            scheduled.set(false)
+            return
+        }
+        inUse.set(src)
         try {
-            // 本路实时降噪（多帧时域，按本画框分辨率/帧率自适应）；关闭时返回原图
-            val src = if (denoiser.enabled) denoiser.process(bitmap) else bitmap
-            // 优先硬件 Canvas（API23+），车机系统较老时回退软件 Canvas
-            canvas = if (android.os.Build.VERSION.SDK_INT >= 23) {
-                currentSurface.lockHardwareCanvas()
-            } else {
-                currentSurface.lockCanvas(null)
+            val dn = denoiser
+            if (dn != null) {
+                val out = dn.process(src)
+                if (out !== src) drawDirect(out)
+                if (dn.overBudget) {
+                    // 最粗块仍超时：进入原图回退窗口，保证预览不冻结
+                    rawFallbackUntil = System.currentTimeMillis() + RAW_FALLBACK_MS
+                    Logger.w(TAG, "denoise over budget, raw fallback ${RAW_FALLBACK_MS}ms " +
+                            "cost=${dn.lastCostMs}ms")
+                }
             }
-            canvas.drawColor(0, PorterDuff.Mode.CLEAR)
-
-            matrix.reset()
-            val vw = textureView.width.toFloat()
-            val vh = textureView.height.toFloat()
-            if (vw == 0f || vh == 0f) return
-
-            // 等比缩放（centerCrop）
-            val scale = maxOf(vw / src.width, vh / src.height)
-            val dx = (vw - src.width * scale) / 2f
-            val dy = (vh - src.height * scale) / 2f
-            matrix.postScale(scale, scale)
-            matrix.postTranslate(dx, dy)
-
-            // 镜像 / 翻转 / 旋转（围绕视图中心）
-            matrix.postRotate(
-                rotationDegrees.toFloat(),
-                vw / 2f, vh / 2f
-            )
-            if (mirrorH) matrix.postScale(-1f, 1f, vw / 2f, vh / 2f)
-            if (flipV) matrix.postScale(1f, -1f, vw / 2f, vh / 2f)
-
-            canvas.drawBitmap(src, matrix, paint)
         } catch (t: Throwable) {
-            Logger.w(TAG, "draw frame failed: ${t.message}")
+            Logger.w(TAG, "denoise task failed: ${t.message}")
         } finally {
-            if (canvas != null) {
-                runCatching { currentSurface.unlockCanvasAndPost(canvas) }
+            inUse.set(null)
+            val more = pending.get()
+            if (more != null && scheduled.compareAndSet(false, true)) {
+                dnHandler?.post { processTask() }
+            } else {
+                scheduled.set(false)
             }
+        }
+    }
+
+    /** 清黑屏（设备切换 / 面板被移出时调用，避免定格残留） */
+    fun clear() {
+        if (!textureView.isAvailable) return
+        if (!painting.compareAndSet(false, true)) return
+        try {
+            val surface = obtainSurface() ?: return
+            val canvas = surface.lockHardwareCanvas()
+            try {
+                canvas.drawColor(Color.BLACK)
+            } finally {
+                surface.unlockCanvasAndPost(canvas)
+            }
+        } catch (t: Throwable) {
+            Logger.w(TAG, "clear failed: ${t.message}")
+        } finally {
             painting.set(false)
         }
     }
 
-    /** 清空画面（设备拔出 / 槽位置空 / 切换设备时调用，避免定格在最后一帧） */
-    fun clear() {
-        val currentSurface = surface ?: return
-        if (textureView.surfaceTexture == null) return
+    /** 直接绘制位图（持有绘制锁，跨线程安全） */
+    private fun drawDirect(bmp: Bitmap) {
+        if (!textureView.isAvailable) return
         if (!painting.compareAndSet(false, true)) return
-        var canvas: Canvas? = null
         try {
-            canvas = if (android.os.Build.VERSION.SDK_INT >= 23) {
-                currentSurface.lockHardwareCanvas()
+            val surface: Surface = obtainSurface() ?: return
+            val canvas: Canvas = surface.lockHardwareCanvas()
+            canvas.drawColor(Color.BLACK)
+            val vw = textureView.width
+            val vh = textureView.height
+            if (vw > 0 && vh > 0) {
+                // center-crop 铺满
+                val br = bmp.width.toFloat() / bmp.height
+                val vr = vw.toFloat() / vh
+                val dw: Float; val dh: Float
+                if (br > vr) {
+                    dh = vh.toFloat(); dw = dh * br
+                } else {
+                    dw = vw.toFloat(); dh = dw / br
+                }
+                val left = (vw - dw) / 2f
+                val top = (vh - dh) / 2f
+                val save = canvas.save()
+                if (rotationDegrees != 0) {
+                    canvas.rotate(rotationDegrees.toFloat(), vw / 2f, vh / 2f)
+                }
+                if (mirrorH) {
+                    canvas.scale(-1f, 1f, vw / 2f, vh / 2f)
+                }
+                canvas.drawBitmap(bmp, null,
+                    android.graphics.RectF(left, top, left + dw, top + dh), paint)
+                canvas.restoreToCount(save)
             } else {
-                currentSurface.lockCanvas(null)
+                canvas.drawBitmap(bmp, 0f, 0f, paint)
             }
-            canvas.drawColor(android.graphics.Color.BLACK)
+            surface.unlockCanvasAndPost(canvas)
         } catch (t: Throwable) {
-            Logger.w(TAG, "clear failed: ${t.message}")
+            Logger.w(TAG, "draw failed: ${t.message}")
         } finally {
-            if (canvas != null) runCatching { currentSurface.unlockCanvasAndPost(canvas) }
             painting.set(false)
+        }
+    }
+
+    private fun ensureBuffers(w: Int, h: Int, level: Int) {
+        if (w == bufW && h == bufH && denoiser != null) {
+            denoiser?.setLevel(level)
+            return
+        }
+        srcA?.recycle(); srcB?.recycle()
+        srcA = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        srcB = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        bufW = w; bufH = h
+        denoiser?.release()
+        // 预览预算：按 30fps 目标约 30ms；弱设备可由 FrameDenoiser 自适应块大小
+        val dn = FrameDenoiser(level, budgetMs = 30)
+        denoiser = dn
+        if (dnThread == null) {
+            val t = HandlerThread("denoise-$instanceId").apply { start() }
+            dnThread = t
+            dnHandler = Handler(t.looper)
         }
     }
 
     fun release() {
-        surface = null
-        denoiser.release()
+        try {
+            dnThread?.quitSafely()
+        } catch (_: Throwable) {}
+        dnThread = null
+        dnHandler = null
+        denoiser?.release()
+        denoiser = null
+        srcA?.recycle(); srcB?.recycle()
+        srcA = null; srcB = null
+        bufW = 0; bufH = 0
+        drawSurface?.release()
+        drawSurface = null
     }
 }

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 勾选框：选中（粉→紫渐变圆 + 白色对勾） -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="oval">
+            <gradient
+                android:angle="0"
+                android:startColor="#FFFF6FB5"
+                android:endColor="#FF8B5CF6"
+                android:type="linear" />
+        </shape>
+    </item>
+    <item
+        android:bottom="7dp"
+        android:drawable="@drawable/ic_check_white"
+        android:left="7dp"
+        android:right="7dp"
+        android:top="7dp" />
+</layer-list>

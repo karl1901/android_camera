@@ -1,12 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 相册网格项：缩略图 + 设备名（自定义名优先）+ 时间；视频右上角播放标识 -->
+<!--
+  相册卡片（深色玻璃）：
+  - 封面（缩略图）铺满顶部，视频右上角时长 + 中央播放角标
+  - 底部：设备名（自定义名优先）+ 时间
+  - 多选时右上角勾选框（普通态隐藏）
+  - 整卡可点（封面/名称/时间任意处都触发）
+-->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:layout_margin="6dp"
-    android:background="?attr/chipBg"
+    android:background="@drawable/bg_glass_card"
     android:orientation="vertical"
-    android:padding="6dp">
+    android:padding="8dp">
 
     <FrameLayout
         android:layout_width="match_parent"
@@ -15,35 +20,61 @@
         <ImageView
             android:id="@+id/imgThumb"
             android:layout_width="match_parent"
-            android:layout_height="120dp"
-            android:background="#11000000"
+            android:layout_height="160dp"
+            android:background="#16000000"
             android:contentDescription="@string/gallery_thumb_desc"
             android:scaleType="centerCrop" />
 
+        <!-- 视频中央播放角标 -->
+        <ImageView
+            android:id="@+id/imgPlay"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:layout_gravity="center"
+            android:background="@drawable/bg_play_badge"
+            android:contentDescription="@string/player_play"
+            android:padding="9dp"
+            android:src="@drawable/ic_play"
+            android:visibility="gone" />
+
+        <!-- 视频时长 -->
         <TextView
-            android:id="@+id/tvPlayBadge"
+            android:id="@+id/tvDuration"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="center"
-            android:background="#66000000"
-            android:paddingStart="10dp"
-            android:paddingTop="4dp"
-            android:paddingEnd="10dp"
-            android:paddingBottom="4dp"
-            android:text="▶"
-            android:textColor="#FFFFFF"
-            android:textSize="22sp"
+            android:layout_gravity="bottom|end"
+            android:layout_margin="6dp"
+            android:background="#99000000"
+            android:paddingStart="7dp"
+            android:paddingTop="3dp"
+            android:paddingEnd="7dp"
+            android:paddingBottom="3dp"
+            android:textColor="#FFFFFFFF"
+            android:textSize="11sp"
+            android:visibility="gone" />
+
+        <!-- 多选勾选框 -->
+        <ImageView
+            android:id="@+id/imgCheck"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:layout_gravity="top|end"
+            android:layout_margin="6dp"
+            android:contentDescription="@string/gallery_select_items"
+            android:src="@drawable/bg_checkbox"
             android:visibility="gone" />
     </FrameLayout>
 
     <TextView
-        android:id="@+id/tvDevice"
+        android:id="@+id/tvName"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
+        android:layout_marginTop="8dp"
         android:ellipsize="end"
-        android:singleLine="true"
-        android:textColor="?attr/colorOnSurface"
+        android:maxLines="1"
+        android:paddingStart="4dp"
+        android:paddingEnd="4dp"
+        android:textColor="#FFEDE9FB"
         android:textSize="13sp"
         android:textStyle="bold" />
 
@@ -52,7 +83,10 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:ellipsize="end"
-        android:singleLine="true"
-        android:textColor="?attr/onSurfaceDim"
+        android:maxLines="1"
+        android:paddingStart="4dp"
+        android:paddingEnd="4dp"
+        android:paddingBottom="2dp"
+        android:textColor="#99FFFFFF"
         android:textSize="11sp" />
 </LinearLayout>

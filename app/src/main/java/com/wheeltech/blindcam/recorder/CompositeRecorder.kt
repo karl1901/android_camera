@@ -114,7 +114,8 @@ class CompositeRecorder(private val mediaSaver: MediaSaver) : UvcCameraManager.F
             denoisers.values.forEach { runCatching { it.release() } }
             denoisers.clear()
             cells.forEach { c ->
-                if (c.denoiseLevel > 0) denoisers[c.slot] = FrameDenoiser(c.denoiseLevel)
+                if (c.denoiseLevel > 0)
+                    denoisers[c.slot] = FrameDenoiser(c.denoiseLevel, budgetMs = (1000 / FPS_HINT))
             }
             frameCount = 0
             // 开录前先确保空间充足（循环模式删最旧），避免一开始就写满

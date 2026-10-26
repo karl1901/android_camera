@@ -126,8 +126,8 @@ class CaptureManager(
                 else Mp4Recorder.suggestBitrate(outW, outH, fps)
             // 编码器在首帧（IO 线程）才真正初始化，保证 EGL 上下文与编码调用在同一线程
             val recorder = Mp4Recorder(cache, outW, outH, bitrate, fps)
-            // 该路录像独立降噪器（与预览同档位，但历史帧独立维护）
-            val denoiser = FrameDenoiser(denoiseLevel)
+            // 该路录像独立降噪器（与预览同档位，但历史帧独立维护），预算按该路帧率
+            val denoiser = FrameDenoiser(denoiseLevel, budgetMs = (1000 / fps.coerceAtLeast(1)))
             recordings[slot] = RecState(
                 recorder, cache, videoDirUri, name, mirrorH, rotationDeg, osd, denoiser
             )

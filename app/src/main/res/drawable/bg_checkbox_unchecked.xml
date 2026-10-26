@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 勾选框：未选中（半透明深色 + 亮边圆方） -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="oval">
+    <solid android:color="#80140B2B" />
+    <stroke
+        android:width="1.5dp"
+        android:color="#B3FFFFFF" />
+</shape>

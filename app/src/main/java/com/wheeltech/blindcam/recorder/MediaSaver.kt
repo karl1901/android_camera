@@ -168,6 +168,23 @@ class MediaSaver(private val context: Context) {
         scanVideos(treeUri).filter { it.kind == GalleryMedia.Kind.ALL }
             .sortedBy { it.timeMs }
 
+    /**
+     * 删除单个媒体项（照片/视频通用）：
+     * - SAF 目录项（[GalleryMedia.uri] 非空）：直接 deleteDocument
+     * - 私有目录项（[GalleryMedia.file] 非空）：file.delete()
+     */
+    fun deleteMedia(media: GalleryMedia): Boolean {
+        media.uri?.let { u ->
+            return runCatching {
+                DocumentsContract.deleteDocument(context.contentResolver, u)
+            }.getOrDefault(false)
+        }
+        media.file?.let { f ->
+            return runCatching { if (f.exists()) f.delete() else false }.getOrDefault(false)
+        }
+        return false
+    }
+
     /** 删除指定文件名的录像（私有目录按名删除；SAF 目录按 displayName 定位后删除）。 */
     fun deleteVideoByName(treeUri: String, name: String): Boolean {
         if (treeUri.isBlank()) {
@@ -304,8 +321,36 @@ class MediaSaver(private val context: Context) {
         val files = dir.listFiles() ?: return emptyList()
         return files.filter { it.isFile && accept(it.name, null, wantVideo) }
             .mapNotNull { f ->
-                GalleryMedia.parse(f.name, wantVideo, f.lastModified())?.copy(file = f)
+                GalleryMedia.parse(f.name, wantVideo, f.lastModified())
+                    ?.copy(file = f, durationMs = if (wantVideo) probeDuration(f.absolutePath) else 0L)
             }
+    }
+
+    /** 读取视频时长（毫秒），失败返回 0 */
+    private fun probeDuration(path: String): Long {
+        val mmr = android.media.MediaMetadataRetriever()
+        return try {
+            mmr.setDataSource(path)
+            mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull() ?: 0L
+        } catch (t: Throwable) {
+            0L
+        } finally {
+            runCatching { mmr.release() }
+        }
+    }
+
+    private fun probeDurationUri(uri: Uri): Long {
+        val mmr = android.media.MediaMetadataRetriever()
+        return try {
+            mmr.setDataSource(context, uri)
+            mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull() ?: 0L
+        } catch (t: Throwable) {
+            0L
+        } finally {
+            runCatching { mmr.release() }
+        }
     }
 
     private fun scanTree(treeUri: String, wantVideo: Boolean): List<GalleryMedia> {
@@ -336,7 +381,9 @@ class MediaSaver(private val context: Context) {
                     val docId = c.getString(idIdx)
                     val docUri = DocumentsContract.buildDocumentUriUsingTree(tree, docId)
                     val last = if (timeIdx >= 0 && !c.isNull(timeIdx)) c.getLong(timeIdx) else 0L
-                    GalleryMedia.parse(name, wantVideo, last)?.copy(uri = docUri)
+                    GalleryMedia.parse(name, wantVideo, last)
+                        ?.copy(uri = docUri,
+                            durationMs = if (wantVideo) probeDurationUri(docUri) else 0L)
                         ?.let { out.add(it) }
                 }
             }

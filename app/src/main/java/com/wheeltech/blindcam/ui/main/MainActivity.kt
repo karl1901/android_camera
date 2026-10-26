@@ -259,10 +259,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupButtons() {
-        binding.btnGrant.setOnClickListener { ensureCameraThen { viewModel.grantAll() } }
+        binding.btnGrant.setOnClickListener { ensureCameraThen { viewModel.grantAllManual() } }
         binding.btnRefresh.setOnClickListener { viewModel.refresh() }
         binding.btnLayout.setOnClickListener { viewModel.cycleLayout() }
-        binding.btnSettings.setOnClickListener { showSettingsDialog() }
+        binding.btnSettings.setOnClickListener {
+            startActivity(android.content.Intent(this, com.wheeltech.blindcam.ui.settings.SettingsActivity::class.java))
+        }
         binding.btnGallery.setOnClickListener {
             startActivity(android.content.Intent(this, com.wheeltech.blindcam.ui.gallery.GalleryActivity::class.java))
         }
@@ -400,7 +402,7 @@ class MainActivity : AppCompatActivity() {
         // 镜像 / 旋转 / 每路降噪（直接应用到渲染器，状态持久化）
         panel.renderer.mirrorH = cfg?.mirror ?: false
         panel.renderer.rotationDegrees = cfg?.rotation ?: 0
-        panel.renderer.denoiseLevel = cfg?.denoise ?: 0
+        panel.renderer.setDenoiseLevel(cfg?.denoise ?: 0)
         val primary = themeColor(com.google.android.material.R.attr.colorPrimary)
         panel.ui.btnMirror.backgroundTintList =
             if (cfg?.mirror == true) ColorStateList.valueOf(primary)

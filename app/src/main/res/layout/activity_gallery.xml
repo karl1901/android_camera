@@ -1,18 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 内置相册：顶部返回/标题/设备筛选/日期筛选，三分类 Tab，下方网格缩略图 -->
+<!--
+  相册（深色玻璃拟态）：
+  - 普通顶栏：返回 / 标题 / 设备筛选 / 日期 / 回看
+  - 多选顶栏（默认隐藏）：全选 / 选择项目 / X
+  - Tab：照片 / 分录像 / 总录像（胶囊分段）
+  - RecyclerView 网格（首击即打开、长按进多选）
+  - 底部多选操作栏：删除
+-->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="?android:colorBackground"
+    android:background="@drawable/bg_gradient_dark"
     android:orientation="vertical">
 
-    <!-- 顶部栏 -->
+    <!-- ============ 普通顶栏 ============ -->
     <LinearLayout
+        android:id="@+id/barTopNormal"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="?attr/appBar"
-        android:elevation="4dp"
+        android:background="@drawable/bg_glass_bar"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:paddingStart="10dp"
@@ -27,84 +33,169 @@
             android:src="@drawable/ic_back" />
 
         <TextView
-            android:layout_width="wrap_content"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
+            android:layout_weight="1"
             android:text="@string/gallery_title"
-            android:textColor="?attr/colorOnSurface"
+            android:textColor="#FFFFFFFF"
             android:textSize="18sp"
             android:textStyle="bold" />
 
-        <View
-            android:layout_width="0dp"
-            android:layout_height="1dp"
-            android:layout_weight="1" />
-
         <TextView
+            android:id="@+id/btnDevice"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:background="@drawable/bg_pill"
+            android:paddingStart="16dp"
+            android:paddingTop="9dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="9dp"
             android:text="@string/gallery_filter_device"
-            android:textColor="?attr/onSurfaceDim"
-            android:textSize="13sp" />
-
-        <Spinner
-            android:id="@+id/spinnerDevice"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:minWidth="150dp" />
-
-        <TextView
-            android:id="@+id/btnTimeline"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="12dp"
-            android:background="@drawable/bg_chip"
-            android:paddingStart="14dp"
-            android:paddingTop="8dp"
-            android:paddingEnd="14dp"
-            android:paddingBottom="8dp"
-            android:text="@string/gallery_timeline"
-            android:textColor="?attr/colorPrimary"
+            android:textColor="#FFE9E6F5"
             android:textSize="13sp" />
 
         <TextView
             android:id="@+id/btnDate"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginStart="12dp"
-            android:background="@drawable/bg_chip"
-            android:paddingStart="14dp"
-            android:paddingTop="8dp"
-            android:paddingEnd="14dp"
-            android:paddingBottom="8dp"
+            android:layout_marginStart="10dp"
+            android:background="@drawable/bg_pill"
+            android:paddingStart="16dp"
+            android:paddingTop="9dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="9dp"
             android:text="@string/gallery_filter_date_all"
-            android:textColor="?attr/colorPrimary"
+            android:textColor="#FFE9E6F5"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/btnTimeline"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:background="@drawable/bg_pill_gradient"
+            android:paddingStart="16dp"
+            android:paddingTop="9dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="9dp"
+            android:text="@string/gallery_timeline"
+            android:textColor="#FFFFFFFF"
             android:textSize="13sp" />
     </LinearLayout>
 
-    <!-- 分类 Tab：照片 / 分录像 / 总录像 -->
-    <com.google.android.material.tabs.TabLayout
-        android:id="@+id/tabLayout"
+    <!-- ============ 多选顶栏（默认隐藏） ============ -->
+    <LinearLayout
+        android:id="@+id/barTopSelect"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        app:tabMode="fixed"
-        app:tabGravity="fill" />
+        android:background="@drawable/bg_glass_bar"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="14dp"
+        android:paddingTop="6dp"
+        android:paddingEnd="12dp"
+        android:paddingBottom="6dp"
+        android:visibility="gone">
 
+        <TextView
+            android:id="@+id/btnSelectAll"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_pill"
+            android:paddingStart="18dp"
+            android:paddingTop="9dp"
+            android:paddingEnd="18dp"
+            android:paddingBottom="9dp"
+            android:text="@string/gallery_select_all"
+            android:textColor="#FFE9E6F5"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/tvSelectTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="@string/gallery_select_items"
+            android:textColor="#FFFFFFFF"
+            android:textSize="16sp" />
+
+        <ImageButton
+            android:id="@+id/btnCloseSelect"
+            style="@style/BlindCam.ToolButton"
+            android:contentDescription="@string/gallery_exit_select"
+            android:src="@drawable/ic_close" />
+    </LinearLayout>
+
+    <!-- ============ Tab 分段（照片 / 分录像 / 总录像） ============ -->
+    <LinearLayout
+        android:id="@+id/tabRow"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:orientation="horizontal"
+        android:paddingStart="16dp"
+        android:paddingTop="12dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="12dp">
+
+        <TextView
+            android:id="@+id/tabPhotos"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginEnd="8dp"
+            android:background="@drawable/bg_pill"
+            android:gravity="center"
+            android:paddingTop="11dp"
+            android:paddingBottom="11dp"
+            android:text="@string/gallery_tab_photos"
+            android:textColor="#FFB9B3CC"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/tabSplit"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginEnd="8dp"
+            android:background="@drawable/bg_pill"
+            android:gravity="center"
+            android:paddingTop="11dp"
+            android:paddingBottom="11dp"
+            android:text="@string/gallery_tab_split"
+            android:textColor="#FFB9B3CC"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/tabTotal"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:background="@drawable/bg_pill"
+            android:gravity="center"
+            android:paddingTop="11dp"
+            android:paddingBottom="11dp"
+            android:text="@string/gallery_tab_total"
+            android:textColor="#FFB9B3CC"
+            android:textSize="14sp" />
+    </LinearLayout>
+
+    <!-- ============ 网格区 ============ -->
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1">
 
-        <GridView
-            android:id="@+id/grid"
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/recycler"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:clipToPadding="false"
-            android:columnWidth="200dp"
-            android:horizontalSpacing="6dp"
-            android:numColumns="auto_fit"
-            android:padding="6dp"
-            android:scrollbars="vertical"
-            android:verticalSpacing="6dp" />
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:paddingBottom="12dp"
+            android:scrollbars="none" />
 
         <TextView
             android:id="@+id/tvEmpty"
@@ -113,8 +204,40 @@
             android:layout_gravity="center"
             android:gravity="center"
             android:text="@string/gallery_empty"
-            android:textColor="?attr/onSurfaceDim"
-            android:textSize="16sp"
+            android:textColor="#99FFFFFF"
+            android:textSize="15sp"
             android:visibility="gone" />
     </FrameLayout>
+
+    <!-- ============ 底部多选操作栏 ============ -->
+    <LinearLayout
+        android:id="@+id/barBottomSelect"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_glass_bar"
+        android:gravity="center"
+        android:orientation="horizontal"
+        android:paddingStart="16dp"
+        android:paddingTop="12dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="14dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/btnDelete"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_delete_pill"
+            android:drawableStart="@drawable/ic_trash"
+            android:drawablePadding="10dp"
+            android:gravity="center"
+            android:paddingStart="34dp"
+            android:paddingTop="12dp"
+            android:paddingEnd="34dp"
+            android:paddingBottom="12dp"
+            android:text="@string/gallery_delete"
+            android:textColor="#FFFFFFFF"
+            android:textSize="15sp" />
+    </LinearLayout>
+
 </LinearLayout>

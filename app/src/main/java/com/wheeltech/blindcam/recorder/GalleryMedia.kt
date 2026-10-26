@@ -25,7 +25,9 @@ data class GalleryMedia(
     val device: String,
     /** 拍摄/录制时间（毫秒） */
     val timeMs: Long,
-    val isVideo: Boolean
+    val isVideo: Boolean,
+    /** 视频时长（毫秒）；照片为 0，扫描时填充 */
+    val durationMs: Long = 0L
 ) {
     enum class Kind { PHOTO, SINGLE, ALL }
 

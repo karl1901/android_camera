@@ -169,25 +169,37 @@ class CameraSupervisor(
         }
     }
 
-    /** 一键授权：串行请求所有未授权设备（用户连续点允许即可） */
-    fun grantAll() {
+    /**
+     * 一键授权：串行请求所有未授权设备（用户连续点允许即可）。
+     * @param manual true=用户主动点击钥匙图标：必须绕过 autoTried 去重，始终重新弹窗，
+     *   否则之前已被自动尝试过（autoTried 已含 key）的失败设备会被静默跳过、表现为"点了没反应"。
+     */
+    fun grantAll(manual: Boolean = false) {
         if (!hasCameraPermission()) {
             Logger.i(TAG, "grantAll skipped: CAMERA runtime permission not granted yet")
+            if (manual) _messages.tryEmit("请先授予相机权限")
             return
         }
-        scope.launch { permissionLock.withLock { grantAllUnlocked() } }
+        scope.launch { permissionLock.withLock { grantAllUnlocked(manual) } }
     }
 
-    private suspend fun grantAllUnlocked() {
+    private suspend fun grantAllUnlocked(manual: Boolean = false) {
         if (!hasCameraPermission()) return
         var pending = manager.devices.value.filter { !it.hasPermission }
         // 去重（按 key），避免重复弹窗
         val seen = HashSet<String>()
         pending = pending.filter { seen.add(it.stableKey) }
+        if (pending.isEmpty()) {
+            if (manual) _messages.tryEmit("所有摄像头均已授权")
+            return
+        }
         for (d in pending) {
-            // 仅当 autoRequestOnce（Attached 事件）尚未处理过该设备时才请求，
-            // 否则两者竞态会对同一设备连弹两次系统授权窗
-            if (autoTried.add(d.stableKey)) {
+            if (manual) {
+                // 手动授权：无条件重新请求（即便 autoTried 已含该 key）
+                doRequest(d)
+            } else if (autoTried.add(d.stableKey)) {
+                // 仅当 autoRequestOnce（Attached 事件）尚未处理过该设备时才请求，
+                // 否则两者竞态会对同一设备连弹两次系统授权窗
                 doRequest(d)
             }
         }

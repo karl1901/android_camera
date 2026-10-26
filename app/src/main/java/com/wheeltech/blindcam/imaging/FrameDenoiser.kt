@@ -2,172 +2,247 @@ package com.wheeltech.blindcam.imaging
 
 import android.graphics.Bitmap
 import com.wheeltech.blindcam.util.Logger
-import kotlin.math.abs
 
 /**
- * 每路独立的「多帧时域降噪器」（软件 ISP 的一部分）。
+ * 软件 ISP：实时降噪（CPU 版，纯整数 + 分块 + 运动自适应 + 时间累积）。
  *
- * 思路对标手机夜景的多帧时域降噪：
- * - 维护上一帧的降噪结果（历史帧），与当前帧做加权混合；
- * - 静态区域历史权重大（多帧累积，噪声被平均掉，等效多帧长曝光）；
- * - 运动区域按帧间亮度差自适应降低历史权重，避免拖影/鬼影；
- * - 暗光区域噪声更大，自动提高历史权重（暗光自动压噪点）。
- * - 历史帧取「上一帧的输出」，形成指数累积，单帧只存一张历史即可等效多帧，开销极低。
+ * 设计要点（性能优先，支持 4K、每路独立）：
+ * - 不做任何逐像素 Float 乘除：所有运算为整数，避免老车机弱核上的软浮点开销。
+ * - 以 k×k 块为单位：块级时间累积（上一帧干净块均值），块内逐像素只做一次
+ *   整数缩放「向干净块均值拉多少」，把空间降噪与时间降噪合并成一次乘加。
+ * - 运动自适应：块均值与历史干净值差异大（真实运动）→ 不拉齐（s=0，画面锐利、无拖影）；
+ *   差异小（静态噪声）→ 强拉齐，噪声被时间累积吃掉。
+ * - 自适应块大小（热降级）：按 [budgetMs] 预算测量处理耗时，太慢就加大块（2→3→4→6→8），
+ *   仍超时则 [overBudget] 返回 true，由调用方决定是否临时回退原图（预览永不卡死）。
  *
- * 性能：每帧只做一次像素遍历（O(像素数)），无逐帧内存分配（数组/输出位图按尺寸复用）。
- * 每个 [PreviewRenderer] / 每路录像各持一个实例，在各自线程调用，因此天然「每路独立、
- * 按该画框分辨率/帧率处理」，多路之间互不影响；4K 也只是线性增加像素数，
- * 并在 [process] 内对超大分辨率自动隔帧处理以保证实时。
+ * 输出位图为内部复用（[process] 返回值），调用方不得回收；关闭时返回入参原图（零拷贝）。
  *
- * @param level 降噪档位：0=关闭，1=弱，2=中，3=强
+ * @param level 0关 / 1弱 / 2中 / 3强
+ * @param budgetMs 单帧处理预算（毫秒）。预览约为帧间隔，录像约为帧间隔；超过则降级。
  */
-class FrameDenoiser(private var level: Int = 0) {
-
-    /** 历史帧像素（上一帧输出），尺寸变化时重建 */
-    private var hist: IntArray? = null
-    /** 当前帧像素复用缓冲 */
-    private var cur: IntArray? = null
-    /** 与输入同尺寸的输出位图（复用），ARGB_8888 */
-    private var out: Bitmap? = null
+class FrameDenoiser(
+    private var level: Int = 0,
+    private val budgetMs: Int = 30
+) {
     private var w = 0
     private var h = 0
 
-    private var frameNo = 0
-    /** 超大分辨率隔帧处理的步长（1=每帧） */
-    private var stride = 1
+    /** 输出位图（内部复用） */
+    private var out: Bitmap? = null
+
+    /** 块网格的历史干净均值（按通道，长度 bw*bh） */
+    private var cleanR: IntArray? = null
+    private var cleanG: IntArray? = null
+    private var cleanB: IntArray? = null
+    private var haveHistory = false
+
+    /** 当前块边长（自适应） */
+    private var block = 2
+    private var bw = 0
+    private var bh = 0
+
+    /** 复用的全分辨率像素数组（避免每帧分配） */
+    private var curPx: IntArray? = null
+    private var outPx: IntArray? = null
+
+    /** 上一帧处理耗时（ms），供外部观测 */
+    @Volatile var lastCostMs: Long = 0
+        private set
+    /** 上一帧是否在最粗块下仍超预算（外部据此回退原图） */
+    @Volatile var overBudget: Boolean = false
+        private set
 
     fun setLevel(l: Int) {
-        val nl = l.coerceIn(0, MAX_LEVEL)
-        if (nl != level) {
-            level = nl
-            // 档位变化清空历史，避免档位切换瞬间的拖影
-            hist = null
-            frameNo = 0
-            Logger.i(TAG, "denoise level=$level")
-        }
+        level = l.coerceIn(0, 3)
     }
 
-    val enabled: Boolean get() = level > 0
+    fun level(): Int = level
 
     /**
-     * 处理一帧，返回降噪后的位图。
-     * - 关闭或尺寸异常时原样返回输入位图（零拷贝）。
-     * - 输出位图为内部复用缓冲，调用方在本次使用完前不要回收、也不要长期持有。
-     * 必须在固定的单一线程内调用（历史帧不做跨线程同步）。
+     * 处理一帧。
+     * @param src 当前帧（MJPEG 解码结果，ARGB）
+     * @return 降噪后的内部复用位图；level=0 时直接返回 [src]
      */
-    fun process(input: Bitmap): Bitmap {
-        if (level <= 0 || input.isRecycled) return input
-        val iw = input.width
-        val ih = input.height
-        if (iw <= 0 || ih <= 0) return input
+    fun process(src: Bitmap): Bitmap {
+        if (level == 0) return src
+        val sw = src.width
+        val sh = src.height
+        ensure(sw, sh)
 
-        // 4K 等超大分辨率：为保实时，强档也只做隔帧时域（其余帧原样输出），
-        // 实测 1080p 走每帧；具体阈值按像素总数自适应。
-        stride = when {
-            iw.toLong() * ih >= 3_500_000L -> 2 // ~4K：隔帧，仍有效且更省电
-            else -> 1
+        val t0 = System.nanoTime()
+        val px = curPx!!
+        val opx = outPx!!
+        src.getPixels(px, 0, sw, 0, 0, sw, sh)
+
+        // 各档位参数
+        // sMax：静态时逐像素向干净块均值拉齐的强度（0..256）
+        // tLow/tHigh：块亮度差的运动门限（越小越保守）
+        val sMax: Int
+        val tLow: Int
+        val tHigh: Int
+        when (level) {
+            1 -> { sMax = 110; tLow = 14; tHigh = 40 }
+            2 -> { sMax = 170; tLow = 18; tHigh = 52 }
+            else -> { sMax = 215; tLow = 22; tHigh = 64 }
         }
-        frameNo++
-        if (stride > 1 && frameNo % stride != 0) {
-            // 隔帧：该帧不更新历史，但仍可输出上一帧会导致延迟，故直接输出当前帧
-            return input
-        }
+        val cR = cleanR!!
+        val cG = cleanG!!
+        val cB = cleanB!!
+        val k = block
+        val span = tHigh - tLow
 
-        ensureBuffers(iw, ih)
-        val histArr = hist!!
-        val curArr = cur!!
-        val outBmp = out!!
+        var bi = 0
+        for (by in 0 until bh) {
+            val y0 = by * k
+            val y1 = minOf(sh, y0 + k)
+            for (bx in 0 until bw) {
+                val x0 = bx * k
+                val x1 = minOf(sw, x0 + k)
 
-        input.getPixels(curArr, 0, iw, 0, 0, iw, ih)
-        // 首帧：历史=当前，输出原图
-        val hasHistory = histArr.size == curArr.size && frameNo > stride
-        if (!hasHistory) {
-            System.arraycopy(curArr, 0, histArr, 0, curArr.size)
-            outBmp.setPixels(curArr, 0, iw, 0, 0, iw, ih)
-            return outBmp
-        }
+                // 块均值（全块求和；已持有全像素数组，求和很便宜）
+                var sr = 0; var sg = 0; var sb = 0; var cnt = 0
+                var yy = y0
+                while (yy < y1) {
+                    var row = yy * sw + x0
+                    val rowEnd = row + (x1 - x0)
+                    while (row < rowEnd) {
+                        val p = px[row]
+                        sr += (p shr 16) and 0xFF
+                        sg += (p shr 8) and 0xFF
+                        sb += p and 0xFF
+                        cnt++
+                        row++
+                    }
+                    yy++
+                }
+                val mr = sr / cnt
+                val mg = sg / cnt
+                val mb = sb / cnt
 
-        // 档位参数：历史基础权重 + 运动判定阈值（亮度 0..255）
-        // 历史权重越大降噪越强但越容易拖影，阈值越大越不易把噪声判成运动
-        val baseBlend = when (level) {
-            1 -> 0.30f
-            2 -> 0.50f
-            else -> 0.70f
-        }
-        val motionThr = when (level) {
-            1 -> 10f
-            2 -> 14f
-            else -> 18f
-        }
-        val motionRange = 28f
+                var cr: Int; var cg: Int; var cb: Int
+                if (!haveHistory) {
+                    cr = mr; cg = mg; cb = mb
+                } else {
+                    cr = cR[bi]; cg = cG[bi]; cb = cB[bi]
+                }
 
-        val n = curArr.size
-        for (i in 0 until n) {
-            val c = curArr[i]
-            val p = histArr[i]
-            val cr = c and 0xFF
-            val cg = (c shr 8) and 0xFF
-            val cb = (c shr 16) and 0xFF
-            val pr = p and 0xFF
-            val pg = (p shr 8) and 0xFF
-            val pb = (p shr 16) and 0xFF
+                // 亮度差（cheap luma：(r+2g+b)>>2）
+                val lCur = (mr + 2 * mg + mb) shr 2
+                val lClean = (cr + 2 * cg + cb) shr 2
+                val d = kotlin.math.abs(lCur - lClean)
 
-            // 亮度（BT.601 整数）
-            val lumC = (cr * 77 + cg * 150 + cb * 29) shr 8
-            val lumP = (pr * 77 + pg * 150 + pb * 29) shr 8
-            val diff = abs(lumC - lumP).toFloat()
+                // s：逐像素拉齐强度 0..sMax
+                val s: Int = when {
+                    d <= tLow -> sMax
+                    d >= tHigh -> 0
+                    else -> sMax * (tHigh - d) / span
+                }
+                // 历史干净块对当前帧的采纳率：静态时慢跟踪（去噪），运动时直接追上（无拖影）
+                val adopt = (256 - s).coerceAtLeast(28)
+                cR[bi] = (cr * (256 - adopt) + mr * adopt) shr 8
+                cG[bi] = (cg * (256 - adopt) + mg * adopt) shr 8
+                cB[bi] = (cb * (256 - adopt) + mb * adopt) shr 8
 
-            // 运动门控：差值越小越静态；超过阈值+范围则不混合
-            var gate = 1f - ((diff - motionThr) / motionRange).coerceIn(0f, 1f)
-            // 暗光（低亮度）噪声更大，适度增强历史权重（最高 +0.2）
-            val darkBoost = (1f - (lumC / 90f).coerceIn(0f, 1f)) * 0.20f
-            val w = (baseBlend + darkBoost) * gate
-            if (w <= 0.01f) {
-                histArr[i] = c
-                continue
+                // 块内逐像素：out = c + ((clean - c) * s >> 8)
+                yy = y0
+                while (yy < y1) {
+                    var row = yy * sw + x0
+                    val rowEnd = row + (x1 - x0)
+                    while (row < rowEnd) {
+                        val p = px[row]
+                        val r = (p shr 16) and 0xFF
+                        val g = (p shr 8) and 0xFF
+                        val b = p and 0xFF
+                        var or2 = r + (((cR[bi] - r) * s) shr 8)
+                        var og2 = g + (((cG[bi] - g) * s) shr 8)
+                        var ob2 = b + (((cB[bi] - b) * s) shr 8)
+                        if (or2 < 0) or2 = 0 else if (or2 > 255) or2 = 255
+                        if (og2 < 0) og2 = 0 else if (og2 > 255) og2 = 255
+                        if (ob2 < 0) ob2 = 0 else if (ob2 > 255) ob2 = 255
+                        opx[row] = (0xFF shl 24) or (or2 shl 16) or (og2 shl 8) or ob2
+                        row++
+                    }
+                    yy++
+                }
+                bi++
             }
-            val iw2 = 1f - w
-            val r = (cr * iw2 + pr * w).toInt().coerceIn(0, 255)
-            val g = (cg * iw2 + pg * w).toInt().coerceIn(0, 255)
-            val b = (cb * iw2 + pb * w).toInt().coerceIn(0, 255)
-            val merged = (0xFF shl 24) or (b shl 16) or (g shl 8) or r
-            curArr[i] = merged
-            histArr[i] = merged // 历史=输出，指数累积多帧
         }
-        outBmp.setPixels(curArr, 0, iw, 0, 0, iw, ih)
-        return outBmp
+        haveHistory = true
+
+        val o = out!!
+        o.setPixels(opx, 0, sw, 0, 0, sw, sh)
+        val cost = (System.nanoTime() - t0) / 1_000_000
+        lastCostMs = cost
+        adaptBlock(cost)
+        return o
     }
 
-    private fun ensureBuffers(iw: Int, ih: Int) {
-        if (iw == w && ih == h && out != null) return
-        val count = iw * ih
+    /** 按预算调整块大小（热降级 / 质量回升） */
+    private fun adaptBlock(costMs: Long) {
+        overBudget = false
+        if (costMs > budgetMs) {
+            val next = when (block) {
+                2 -> 3; 3 -> 4; 4 -> 6; 6 -> 8; else -> 8
+            }
+            if (next != block) {
+                block = next
+                rebuildGrid()
+                Logger.i(TAG, "denoise 降级 block=$block cost=${costMs}ms")
+            } else {
+                // 已到最粗仍超时：通知外部回退原图
+                overBudget = true
+            }
+        } else if (costMs < budgetMs * 0.55f) {
+            // 余量充足：回升质量（块变小）
+            val prev = when (block) {
+                8 -> 6; 6 -> 4; 4 -> if (level <= 1) 2 else 3; 3 -> 2; else -> 2
+            }
+            if (prev != block) {
+                block = prev
+                rebuildGrid()
+            }
+        }
+    }
+
+    private fun ensure(sw: Int, sh: Int) {
+        if (sw == w && sh == h && out != null) return
         out?.recycle()
-        out = Bitmap.createBitmap(iw, ih, Bitmap.Config.ARGB_8888)
-        hist = IntArray(count)
-        cur = IntArray(count)
-        w = iw; h = ih
-        frameNo = 0
+        out = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
+        curPx = IntArray(sw * sh)
+        outPx = IntArray(sw * sh)
+        w = sw; h = sh
+        // 初始块大小按档位与分辨率粗估（4K 起步大一点，避免首帧就超时）
+        block = when {
+            level >= 3 && (sw >= 3200 || sh >= 3200) -> 4
+            level >= 2 && (sw >= 3200 || sh >= 3200) -> 3
+            level == 1 -> 2
+            else -> 3
+        }
+        rebuildGrid()
     }
 
-    /** 释放（路移除/页面销毁时调用） */
+    private fun rebuildGrid() {
+        bw = (w + block - 1) / block
+        bh = (h + block - 1) / block
+        val n = bw * bh
+        cleanR = IntArray(n)
+        cleanG = IntArray(n)
+        cleanB = IntArray(n)
+        haveHistory = false
+    }
+
     fun release() {
         out?.recycle()
         out = null
-        hist = null
-        cur = null
+        curPx = null
+        outPx = null
+        cleanR = null
+        cleanG = null
+        cleanB = null
         w = 0; h = 0
     }
 
     companion object {
         private const val TAG = "denoise"
-        const val MAX_LEVEL = 3
-
-        /** 档位中文名（设置 UI 用） */
-        fun levelLabel(l: Int): String = when (l.coerceIn(0, MAX_LEVEL)) {
-            0 -> "关闭"
-            1 -> "弱"
-            2 -> "中"
-            else -> "强"
-        }
     }
 }

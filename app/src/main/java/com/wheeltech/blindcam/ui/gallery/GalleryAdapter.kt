@@ -32,7 +32,9 @@ internal fun GalleryMedia.keyOf(): String =
 class GalleryAdapter(
     private val onItemClick: (Int) -> Unit,
     private val onItemLongClick: (Int) -> Unit,
-    private val selectionState: () -> SelectionState
+    private val selectionState: () -> SelectionState,
+    /** 按屏幕自适应后的缩略图高度（px），0=用布局默认值 */
+    private val thumbHeightPx: Int = 0
 ) : RecyclerView.Adapter<GalleryAdapter.VH>() {
 
     /** 多选状态快照（由 Activity 维护） */
@@ -71,8 +73,33 @@ class GalleryAdapter(
         val sel = selectionState()
         val isVideo = m.isVideo
         val key = m.keyOf()
+
+        // 卡片背景/文字颜色随主题（浅色主题用白色磨砂卡 + 深色文字）
+        val ctx = holder.itemView.context
+        val tvAttr = android.util.TypedValue()
+        if (ctx.theme.resolveAttribute(R.attr.cardBg, tvAttr, true) && tvAttr.resourceId != 0) {
+            holder.itemView.setBackgroundResource(tvAttr.resourceId)
+        }
+        val colorOnSurface = android.util.TypedValue()
+        ctx.theme.resolveAttribute(
+            com.google.android.material.R.attr.colorOnSurface, colorOnSurface, true
+        )
+        val dim = android.util.TypedValue()
+        ctx.theme.resolveAttribute(R.attr.onSurfaceDim, dim, true)
+        holder.tvName.setTextColor(colorOnSurface.data)
+        holder.tvTime.setTextColor(dim.data)
+
         holder.tvName.text = m.device
         holder.tvTime.text = m.displayTime
+
+        // 卡片缩略图高度随屏幕列宽自适应，避免小屏一张卡占半屏、大屏又过小
+        if (thumbHeightPx > 0) {
+            val lp = holder.imgThumb.layoutParams
+            if (lp.height != thumbHeightPx) {
+                lp.height = thumbHeightPx
+                holder.imgThumb.layoutParams = lp
+            }
+        }
 
         // 视频角标 / 时长
         holder.imgPlay.visibility = if (isVideo) View.VISIBLE else View.GONE

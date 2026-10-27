@@ -3,6 +3,7 @@ package com.wheeltech.blindcam.recorder
 import android.content.Context
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
 import android.os.SystemClock
 import com.wheeltech.blindcam.domain.CameraFrame
 import com.wheeltech.blindcam.domain.UvcCameraManager
@@ -12,6 +13,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -30,6 +32,9 @@ class CaptureManager(
         private const val TAG = "capture"
         private val PHOTO_TS get() = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US)
         private val VIDEO_TS get() = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US)
+
+        /** 拍照等待新帧的上限；超时明确提示，不让按钮“点了没反应”（4K+降噪留足时间） */
+        private const val PHOTO_TIMEOUT_MS = 4_000L
 
         /** 把设备名清理为文件名安全片段（保留中文，去掉分隔符/空白/特殊字符） */
         fun safeName(name: String?): String {
@@ -64,9 +69,20 @@ class CaptureManager(
         val deviceName: String,
         val mirrorH: Boolean,
         val rotationDeg: Int,
+        val denoiseLevel: Int,
         val cb: (Result<String>) -> Unit
-    )
+    ) {
+        private val done = AtomicBoolean(false)
+
+        /** 成功/失败/超时只回调一次，避免超时后迟到的帧再次弹提示 */
+        fun complete(result: Result<String>) {
+            if (done.compareAndSet(false, true)) cb(result)
+        }
+    }
     private val pendingPhotos = ConcurrentHashMap<Int, PhotoReq>()
+
+    /** 拍照超时兜底：没有帧（取流卡住/刚拔线）时不能让用户点了没反应 */
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     /** 进行中的录像 */
     private val recordings = ConcurrentHashMap<Int, RecState>()
@@ -88,16 +104,28 @@ class CaptureManager(
         }
     }
 
-    /** 拍照：抓下一帧，按当前镜像/旋转变换后保存 JPEG（与预览所见一致） */
+    /** 拍照：抓下一帧，按当前镜像/旋转/降噪变换后保存 JPEG（与预览所见一致） */
     fun takePhoto(
         slot: Int,
         photoDirUri: String,
         deviceName: String,
         mirrorH: Boolean,
         rotationDeg: Int,
+        denoiseLevel: Int = 0,
         cb: (Result<String>) -> Unit
     ) {
-        pendingPhotos[slot] = PhotoReq(photoDirUri, safeName(deviceName), mirrorH, rotationDeg, cb)
+        val req = PhotoReq(
+            photoDirUri, safeName(deviceName), mirrorH, rotationDeg,
+            denoiseLevel.coerceIn(0, 3), cb
+        )
+        pendingPhotos.put(slot, req)?.complete(
+            Result.failure(IllegalStateException("新的拍照请求已提交"))
+        )
+        mainHandler.postDelayed({
+            if (pendingPhotos.remove(slot, req)) {
+                req.complete(Result.failure(IllegalStateException("拍照超时：该通道暂无新画面")))
+            }
+        }, PHOTO_TIMEOUT_MS)
     }
 
     /** 开始录像（分辨率/帧率 = 当前取流档位；镜像/旋转/OSD/降噪应用于输出，旋转 90/270 时宽高互换） */
@@ -179,20 +207,22 @@ class CaptureManager(
         cells: List<CompositeRecorder.Cell>,
         osdName: Boolean,
         osdClock: Boolean,
-        osdSpeed: Boolean,
         videoDirUri: String,
         bitrate: Int = 0,
         loopEnabled: Boolean = false,
         segmentMinutes: Int = 3,
         keepFreeMb: Int = 1024
     ): Boolean = composite.start(
-        cells, osdName, osdClock, osdSpeed, videoDirUri,
+        cells, osdName, osdClock, videoDirUri,
         bitrate, loopEnabled, segmentMinutes, keepFreeMb
     )
 
     fun stopComposite(cb: (Result<String>) -> Unit) = composite.stop(cb)
 
     fun isCompositeRecording(): Boolean = composite.isRunning
+
+    /** 总录像正在收尾落盘（此时用户再次点击应忽略，而不是报“启动失败”） */
+    fun isCompositeStopping(): Boolean = composite.isStopping
 
     override fun onFrame(frame: CameraFrame) {
         val slot = frame.cameraId
@@ -206,19 +236,21 @@ class CaptureManager(
         // 帧到达真实时间（在 native 回调线程取，单调），随任务投递给 IO 线程，保证录像时间戳真实
         val arriveNs = SystemClock.elapsedRealtimeNanos()
 
-        // 拍照：回调内拷贝原始字节；解码/旋转/重编码放到 IO 线程
+        // 拍照：回调内拷贝原始字节；解码/旋转/降噪/重编码放到 IO 线程
         if (photoReq != null) {
             val req = photoReq
             val raw = frame.data.copyOf(frame.data.size)
             handlerFor(slot).post {
                 try {
-                    val jpeg = JpegTransformer.transform(raw, req.mirrorH, req.rotationDeg)
+                    val jpeg = JpegTransformer.transform(
+                        raw, req.mirrorH, req.rotationDeg, req.denoiseLevel
+                    )
                     val name = "P_${req.deviceName}_${PHOTO_TS.format(Date())}.jpg"
                     val path = mediaSaver.savePhoto(jpeg, name, req.dirUri)
-                    req.cb(Result.success(path))
+                    req.complete(Result.success(path))
                 } catch (t: Throwable) {
                     Logger.e(TAG, "save photo failed", t)
-                    req.cb(Result.failure(t))
+                    req.complete(Result.failure(t))
                 }
             }
         }

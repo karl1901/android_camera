@@ -85,4 +85,7 @@ object NativeUvc {
 
     /** 更新会话 cameraId（设备在槽位间重新映射时调用） */
     external fun nativeSetCameraId(sessionHandle: Long, cameraId: Int)
+
+    /** USB 链路速度：1=Full 12Mbps, 2=High 480Mbps, 3=Super 5Gbps, 4=Super+ 10Gbps */
+    external fun nativeGetDeviceSpeed(sessionHandle: Long): Int
 }

@@ -5,7 +5,7 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@drawable/bg_gradient_dark"
+    android:background="?attr/appBg"
     android:fillViewport="true"
     android:scrollbars="none">
 
@@ -18,7 +18,7 @@
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="@drawable/bg_glass_bar"
+            android:background="?attr/barBg"
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingStart="12dp"
@@ -82,7 +82,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="10dp"
-                android:background="@drawable/bg_pill_gradient"
+                android:background="?attr/pillSelectedBg"
                 android:paddingStart="14dp"
                 android:paddingTop="8dp"
                 android:paddingEnd="14dp"
@@ -159,7 +159,7 @@
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:background="@drawable/bg_glass_bar"
+            android:background="?attr/barBg"
             android:gravity="center_vertical"
             android:orientation="horizontal"
             android:paddingStart="12dp"
@@ -167,40 +167,37 @@
             android:paddingEnd="14dp"
             android:paddingBottom="8dp">
 
-            <TextView
+            <ImageButton
                 android:id="@+id/btnRewind"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
                 android:background="@drawable/bg_play_badge"
                 android:contentDescription="@string/player_rewind"
-                android:padding="10dp"
-                android:text="⏪"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp" />
+                android:padding="12dp"
+                android:src="@drawable/ic_rewind"
+                android:tint="#FFFFFF" />
 
-            <TextView
+            <ImageButton
                 android:id="@+id/btnPlayPause"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
                 android:layout_marginStart="8dp"
                 android:background="@drawable/bg_play_badge"
                 android:contentDescription="@string/player_play"
-                android:padding="10dp"
-                android:text="⏸"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp" />
+                android:padding="12dp"
+                android:src="@drawable/ic_play"
+                android:tint="#FFFFFF" />
 
-            <TextView
+            <ImageButton
                 android:id="@+id/btnForward"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
                 android:layout_marginStart="8dp"
                 android:background="@drawable/bg_play_badge"
                 android:contentDescription="@string/player_forward"
-                android:padding="10dp"
-                android:text="⏩"
-                android:textColor="#FFFFFF"
-                android:textSize="16sp" />
+                android:padding="12dp"
+                android:src="@drawable/ic_forward"
+                android:tint="#FFFFFF" />
 
             <TextView
                 android:id="@+id/tvCurrent"
@@ -243,7 +240,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="@string/playback_map_title"
-                android:textColor="#FFFFFF"
+                android:textColor="?attr/colorOnSurface"
                 android:textSize="16sp"
                 android:textStyle="bold" />
 
@@ -253,7 +250,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="2dp"
                 android:text="@string/playback_map_hint"
-                android:textColor="#B9B3CC"
+                android:textColor="?attr/onSurfaceDim"
                 android:textSize="12sp" />
 
             <com.amap.api.maps.MapView
@@ -264,3 +261,4 @@
         </LinearLayout>
     </LinearLayout>
 </ScrollView>
+

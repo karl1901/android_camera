@@ -12,6 +12,8 @@ import com.wheeltech.blindcam.recorder.BitrateAdvisor
 import com.wheeltech.blindcam.recorder.CompositeRecorder
 import com.wheeltech.blindcam.recorder.OsdRenderer
 import com.wheeltech.blindcam.usb.UsbDeviceInfo
+import com.wheeltech.blindcam.util.Logger
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -21,6 +23,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 主界面 ViewModel：薄门面。
@@ -91,6 +94,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun rotate(slot: Int) = supervisor.rotate(slot)
 
+    /** 设置页分段选择器直接指定角度，避免连续 rotate() 读旧值被合并 */
+    fun setRotation(slot: Int, degrees: Int) = supervisor.setRotation(slot, degrees)
+
     fun rename(slot: Int, name: String) = supervisor.rename(slot, name)
 
     fun setWarn(slot: Int, warn: Boolean) = supervisor.setWarn(slot, warn)
@@ -103,8 +109,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ------------------------------------------------------------------
     fun setOsdName(v: Boolean) = viewModelScope.launch { settingsRepository.setOsdName(v) }
     fun setOsdClock(v: Boolean) = viewModelScope.launch { settingsRepository.setOsdClock(v) }
-    fun setOsdSpeed(v: Boolean) = viewModelScope.launch { settingsRepository.setOsdSpeed(v) }
     fun setWarnVolume(v: Int) = viewModelScope.launch { settingsRepository.setWarnVolume(v) }
+    fun setBootAutoStart(v: Boolean) = viewModelScope.launch { settingsRepository.setBootAutoStart(v) }
 
     // 码率 / 循环录像 / GPS 开关
     fun setSingleBitrateQuality(v: Int) =
@@ -127,25 +133,29 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ------------------------------------------------------------------
     fun exportLogs(treeUri: String, onResult: (String) -> Unit) {
         viewModelScope.launch {
-            runCatching {
-                val name = "blind_log_" +
-                    java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
-                        .format(java.util.Date()) + ".txt"
-                val ctx = getApplication<Application>()
-                val header = buildString {
-                    appendLine("===== 盲区辅助 APP 运行日志 =====")
-                    appendLine("导出时间: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())}")
-                    appendLine("品牌/型号: ${android.os.Build.BRAND} ${android.os.Build.MODEL}")
-                    appendLine("Android: ${android.os.Build.VERSION.RELEASE} (SDK ${android.os.Build.VERSION.SDK_INT})")
-                    runCatching {
-                        val pi = ctx.packageManager.getPackageInfo(ctx.packageName, 0)
-                        appendLine("应用版本: ${pi.versionName} (${pi.longVersionCode})")
+            // 日志可能接近 4MB，读文件/拼装/写 SAF 全部放 IO，避免导出时主线程 ANR
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching {
+                    val name = "blind_log_" +
+                        java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US)
+                            .format(java.util.Date()) + ".txt"
+                    val ctx = getApplication<Application>()
+                    val header = buildString {
+                        appendLine("===== 盲区辅助 APP 运行日志 =====")
+                        appendLine("导出时间: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())}")
+                        appendLine("品牌/型号: ${android.os.Build.BRAND} ${android.os.Build.MODEL}")
+                        appendLine("Android: ${android.os.Build.VERSION.RELEASE} (SDK ${android.os.Build.VERSION.SDK_INT})")
+                        runCatching {
+                            val pi = ctx.packageManager.getPackageInfo(ctx.packageName, 0)
+                            appendLine("应用版本: ${pi.versionName} (${pi.longVersionCode})")
+                        }
+                        appendLine("================================")
                     }
-                    appendLine("================================")
+                    appContainer.mediaSaver.exportText(treeUri, name, header + Logger.snapshot())
+                    name
                 }
-                appContainer.mediaSaver.exportText(treeUri, name, header + com.wheeltech.blindcam.util.Logger.snapshot())
-                name
-            }.onSuccess { onResult("日志已导出：$it") }
+            }
+            outcome.onSuccess { onResult("日志已导出：$it") }
                 .onFailure { onResult("导出失败：${it.message}") }
         }
     }
@@ -189,7 +199,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // 按该画框当前镜像/旋转设置输出（与预览所见一致），文件名带设备名便于相册分类
             captureManager.takePhoto(
                 slot, dir, displayNameOf(rt),
-                rt.config?.mirror ?: false, rt.config?.rotation ?: 0
+                rt.config?.mirror ?: false, rt.config?.rotation ?: 0,
+                rt.config?.denoise ?: 0
             ) { result ->
                 result.onSuccess { emit("照片已保存：$it") }
                     .onFailure { emit("拍照失败：${it.message}") }
@@ -241,13 +252,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 根据全局设置构造单路录像的 OSD 叠加（无任何叠加项时返回 null） */
     private fun buildOverlay(s: AppSettings, name: String): OsdRenderer.Overlay? =
-        if (s.osdName || s.osdClock || s.osdSpeed) {
+        if (s.osdName || s.osdClock) {
             OsdRenderer.Overlay(
                 showName = s.osdName,
                 name = name,
-                showClock = s.osdClock,
-                showSpeed = s.osdSpeed,
-                speedText = null
+                showClock = s.osdClock
             )
         } else {
             null
@@ -255,14 +264,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 总录像开关：录制所有画面（按当前 1/2/3/4 宫格合成） */
     fun toggleComposite() {
+        if (captureManager.isCompositeStopping()) {
+            // 正在保存上一段：忽略连点，避免误报“启动失败”
+            return
+        }
         if (captureManager.isCompositeRecording()) {
             appContainer.gpsTracker.stop()
+            // 保持“录制中”视觉状态直到文件真正落盘完成，避免用户误以为已停止而重复点击
             captureManager.stopComposite { result ->
                 result.onSuccess { emit("总录像已保存：$it") }
                     .onFailure { emit("总录像失败：${it.message}") }
                 _compositeRecording.value = false
             }
-            _compositeRecording.value = false
             return
         }
         viewModelScope.launch {
@@ -286,7 +299,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             val compositeBitrate = BitrateAdvisor.compositeBitrate(cells.size, s.compositeBitrateQuality)
             val ok = captureManager.startComposite(
-                cells, s.osdName, s.osdClock, s.osdSpeed, s.videoDirUri,
+                cells, s.osdName, s.osdClock, s.videoDirUri,
                 bitrate = compositeBitrate,
                 loopEnabled = s.loopEnabled,
                 segmentMinutes = s.loopSegmentMinutes,

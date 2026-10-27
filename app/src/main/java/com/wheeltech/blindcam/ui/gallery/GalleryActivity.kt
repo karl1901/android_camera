@@ -49,6 +49,10 @@ class GalleryActivity : AppCompatActivity() {
     /** 当前 Tab 扫描到的全部媒体（未做设备/日期筛选） */
     private var scanned: List<GalleryMedia> = emptyList()
 
+    /** 三个 Tab 的扫描结果缓存：切换 Tab 立即显示，不再每次重新扫描/探测时长 */
+    private val tabCache = HashMap<Tab, List<GalleryMedia>>()
+    private var loading = false
+
     /** 设备筛选：选中的设备显示名；null=全部 */
     private var deviceFilter: String? = null
     /** 日期筛选：dateKey；null=全部 */
@@ -59,20 +63,27 @@ class GalleryActivity : AppCompatActivity() {
     private val selectedKeys: MutableSet<String> = Collections.synchronizedSet(LinkedHashSet())
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val appTheme = application as UvcApp
+        setTheme(appTheme.themeResId(appTheme.currentThemeMode))
         super.onCreate(savedInstanceState)
         binding = ActivityGalleryBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        // 进程可能在竖屏配置下启动，Activity 才切横屏；这里刷新当前方向尺寸
+        com.wheeltech.blindcam.domain.DevicePerformance.updateDisplay(this)
+
+        // 横屏车机/手机/平板：按屏幕宽 dp 计算列数，卡片不再固定 220dp 占半屏
+        val columns = com.wheeltech.blindcam.domain.DevicePerformance.galleryColumns()
+        val screenW = com.wheeltech.blindcam.domain.DevicePerformance.screenWidthPx
+        val thumbHeightPx = ((screenW.toFloat() / columns) * 0.62f).toInt()
         adapter = GalleryAdapter(
             onItemClick = { pos -> onCardClick(pos) },
             onItemLongClick = { pos -> onCardLongClick(pos) },
             selectionState = {
                 GalleryAdapter.SelectionState(selectMode, synchronized(selectedKeys) { LinkedHashSet(selectedKeys) })
-            }
+            },
+            thumbHeightPx = thumbHeightPx
         )
-        // 横屏车机：列数按宽度自适应（每列约 220dp）
-        val columns = (resources.displayMetrics.widthPixels /
-                (220 * resources.displayMetrics.density)).toInt().coerceIn(2, 6)
         binding.recycler.layoutManager = GridLayoutManager(this, columns)
         binding.recycler.adapter = adapter
 
@@ -93,14 +104,16 @@ class GalleryActivity : AppCompatActivity() {
         binding.tabSplit.setOnClickListener { switchTab(Tab.SPLIT) }
         binding.tabTotal.setOnClickListener { switchTab(Tab.TOTAL) }
 
-        switchTab(Tab.PHOTOS)
+        // 进入相册时一次性后台预加载三个 Tab，之后切换就是内存数据，无扫描延迟
+        switchTab(Tab.PHOTOS, refreshIfMissing = false)
+        preloadAll()
     }
 
     // ------------------------------------------------------------------
     // 数据加载 / 筛选
     // ------------------------------------------------------------------
 
-    private fun switchTab(t: Tab) {
+    private fun switchTab(t: Tab, refreshIfMissing: Boolean = true) {
         tab = t
         // 切 Tab 退出多选并清筛选（设备筛选在不同 Tab 间选项不同）
         if (selectMode) exitSelectMode()
@@ -109,7 +122,91 @@ class GalleryActivity : AppCompatActivity() {
         binding.btnDevice.setText(R.string.gallery_filter_device)
         binding.btnDate.setText(R.string.gallery_filter_date_all)
         updateTabStyles()
-        reload()
+        val cached = tabCache[t]
+        scanned = cached ?: emptyList()
+        if (cached == null && loading) {
+            showLoading()
+        } else {
+            applyFilter()
+        }
+        if (cached == null && refreshIfMissing && !loading) refreshTab(t, showLoading = true)
+    }
+
+    /**
+     * 预加载：照片与视频并行扫描，谁先完成就先更新对应 Tab；
+     * 分录像、总录像从视频结果派生，之后切换 Tab 不再重复扫描/探测时长。
+     */
+    private fun preloadAll() {
+        if (loading) return
+        loading = true
+        showLoading()
+        var pending = 2
+        fun oneDone() {
+            pending--
+            if (pending <= 0) loading = false
+        }
+        val app = application as UvcApp
+        lifecycleScope.launch {
+            val s = withContext(Dispatchers.IO) { app.settingsRepository.settings.first() }
+            launch {
+                runCatching { withContext(Dispatchers.IO) { app.mediaSaver.scanPhotos(s.photoDirUri) } }
+                    .onSuccess { list ->
+                        tabCache[Tab.PHOTOS] = list
+                        if (tab == Tab.PHOTOS) {
+                            scanned = list
+                            applyFilter()
+                        }
+                    }
+                oneDone()
+            }
+            launch {
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        app.mediaSaver.scanVideos(s.videoDirUri)
+                    }
+                }.onSuccess { videos ->
+                    tabCache[Tab.SPLIT] = videos.filter { it.kind == GalleryMedia.Kind.SINGLE }
+                    tabCache[Tab.TOTAL] = videos.filter { it.kind == GalleryMedia.Kind.ALL }
+                    if (tab == Tab.SPLIT || tab == Tab.TOTAL) {
+                        scanned = tabCache[tab] ?: emptyList()
+                        applyFilter()
+                    }
+                }
+                oneDone()
+            }
+        }
+    }
+
+    /** 只刷新一个 Tab（从播放器返回、删除后、设置目录变化） */
+    private fun refreshTab(t: Tab, showLoading: Boolean = false, onDone: (() -> Unit)? = null) {
+        val seq = ++loadSeq
+        if (showLoading) showLoading()
+        lifecycleScope.launch {
+            val app = application as UvcApp
+            val list = withContext(Dispatchers.IO) {
+                val s = app.settingsRepository.settings.first()
+                when (t) {
+                    Tab.PHOTOS -> app.mediaSaver.scanPhotos(s.photoDirUri)
+                    Tab.SPLIT -> app.mediaSaver.scanVideos(s.videoDirUri)
+                        .filter { it.kind == GalleryMedia.Kind.SINGLE }
+                    Tab.TOTAL -> app.mediaSaver.scanVideos(s.videoDirUri)
+                        .filter { it.kind == GalleryMedia.Kind.ALL }
+                }
+            }
+            if (seq != loadSeq) return@launch
+            tabCache[t] = list
+            if (tab == t && !isFinishing && !isDestroyed) {
+                scanned = list
+                applyFilter()
+                onDone?.invoke()
+            }
+        }
+    }
+
+    private fun showLoading() {
+        binding.tvEmpty.text = getString(R.string.gallery_loading)
+        binding.tvEmpty.visibility = View.VISIBLE
+        adapter.submit(emptyList())
     }
 
     private fun updateTabStyles() {
@@ -119,33 +216,39 @@ class GalleryActivity : AppCompatActivity() {
     }
 
     private fun setTabBg(v: TextView, selected: Boolean) {
-        v.setBackgroundResource(if (selected) R.drawable.bg_pill_gradient else R.drawable.bg_pill)
-        v.setTextColor(if (selected) 0xFFFFFFFF.toInt() else 0xFFB9B3CC.toInt())
+        v.background = if (selected) {
+            themeDrawable(R.attr.pillSelectedBg)
+                ?: androidx.core.content.ContextCompat.getDrawable(this, R.drawable.bg_pill_gradient)
+        } else {
+            themeDrawable(R.attr.pillBg)
+                ?: androidx.core.content.ContextCompat.getDrawable(this, R.drawable.bg_pill)
+        }
+        v.setTextColor(if (selected) 0xFFFFFFFF.toInt() else themeColor(
+            com.google.android.material.R.attr.colorOnSurface
+        ))
     }
 
-    private fun reload() {
-        lifecycleScope.launch {
-            val app = application as UvcApp
-            val list = withContext(Dispatchers.IO) {
-                val s = app.settingsRepository.settings.first()
-                when (tab) {
-                    Tab.PHOTOS -> app.mediaSaver.scanPhotos(s.photoDirUri)
-                    Tab.SPLIT -> app.mediaSaver.scanVideos(s.videoDirUri)
-                        .filter { it.kind == GalleryMedia.Kind.SINGLE }
-                    Tab.TOTAL -> app.mediaSaver.scanVideos(s.videoDirUri)
-                        .filter { it.kind == GalleryMedia.Kind.ALL }
-                }
-            }
-            scanned = list
-            applyFilter()
-        }
+    private fun themeDrawable(attr: Int): android.graphics.drawable.Drawable? {
+        val tv = android.util.TypedValue()
+        if (!theme.resolveAttribute(attr, tv, true) || tv.resourceId == 0) return null
+        return androidx.core.content.ContextCompat.getDrawable(this, tv.resourceId)
     }
+
+    private fun themeColor(attr: Int): Int {
+        val tv = android.util.TypedValue()
+        theme.resolveAttribute(attr, tv, true)
+        return tv.data
+    }
+
+    /** 扫描代号：快速切 Tab/返回时只应用最后一次结果 */
+    private var loadSeq = 0
 
     private fun applyFilter() {
         var list = scanned
         deviceFilter?.let { name -> list = list.filter { it.device == name } }
         dateFilter?.let { key -> list = list.filter { it.dateKey == key } }
         adapter.submit(list)
+        binding.tvEmpty.setText(R.string.gallery_empty)
         binding.tvEmpty.visibility = if (list.isEmpty()) View.VISIBLE else View.GONE
     }
 
@@ -227,6 +330,15 @@ class GalleryActivity : AppCompatActivity() {
 
     private fun openMedia(m: GalleryMedia) {
         if (m.isVideo) {
+            if (m.kind == GalleryMedia.Kind.ALL) {
+                // 总录像：进入回看页（时间轴、画面切换、GPS 轨迹联动），而不是简单播放器
+                val intent = Intent(this, PlaybackActivity::class.java).apply {
+                    putExtra(PlaybackActivity.EXTRA_DATE, m.dateKey)
+                    putExtra(PlaybackActivity.EXTRA_TIME_MS, m.timeMs)
+                }
+                startActivity(intent)
+                return
+            }
             val intent = Intent(this, VideoPlayerActivity::class.java)
             putExtras(intent, m)
             startActivity(intent)
@@ -319,17 +431,21 @@ class GalleryActivity : AppCompatActivity() {
                 val toDelete = scanned.filter { it.keyOf() in keys }
                 toDelete.forEach { if (app.mediaSaver.deleteMedia(it)) ok++ }
             }
-            // 删除后不退出多选；清空已删项并实时刷新
+            // 删除后不退出多选；先本地移除再后台刷新
             keys.forEach { selectedKeys.remove(it) }
+            scanned = scanned.filter { it.keyOf() !in keys }
+            tabCache.remove(tab)
+            applyFilter()
             toast(getString(R.string.gallery_delete_ok, ok))
-            reload()
-            // reload 完成后仍保持多选态：reload 不退出多选，但 applyFilter 会刷新
-            if (selectMode) {
-                binding.barTopNormal.visibility = View.GONE
-                binding.barTopSelect.visibility = View.VISIBLE
-                binding.barBottomSelect.visibility = View.VISIBLE
-                binding.btnTimeline.visibility = View.GONE
-                updateSelectTitle()
+            refreshTab(tab) {
+                // 刷新完成后仍保持多选态，并刷新“已选择 N 项/全选”文案
+                if (selectMode) {
+                    binding.barTopNormal.visibility = View.GONE
+                    binding.barTopSelect.visibility = View.VISIBLE
+                    binding.barBottomSelect.visibility = View.VISIBLE
+                    binding.btnTimeline.visibility = View.GONE
+                    updateSelectTitle()
+                }
             }
         }
     }
@@ -341,7 +457,7 @@ class GalleryActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        // 从查看器返回时刷新（期间可能有新文件）
-        reload()
+        // 从查看器/播放器/回看返回时刷新当前 Tab（期间可能有新文件）；其他 Tab 用缓存
+        if (!loading) refreshTab(tab)
     }
 }

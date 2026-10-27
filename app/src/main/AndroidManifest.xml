@@ -30,6 +30,8 @@
     <!-- targetSdk=33：使用 connectedDevice 类型；该权限在 API34 引入，声明在低版本系统上无效但无害 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 车机断电重启后自动拉起盲区辅助（需求 III.2.7 / II.7） -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- Android 13+ 前台服务通知（用户可拒绝，不影响 connectedDevice 取流） -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
@@ -96,6 +98,17 @@
             android:name=".service.UvcForegroundService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!-- 开机自启：车机断电重启后自动拉起主界面并恢复已授权摄像头 -->
+        <receiver
+            android:name=".service.BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
 
         <!-- 内置相册：查看照片 / 分录像 / 总录像 -->
         <activity

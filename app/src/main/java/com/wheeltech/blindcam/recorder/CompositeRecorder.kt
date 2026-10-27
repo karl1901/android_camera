@@ -24,7 +24,8 @@ import java.util.concurrent.ConcurrentHashMap
  * 再通过 [Mp4Recorder] 硬件编码为单个 MP4（H.264），回放时一屏看到所有画面。
  *
  * - 每格用当前帧（含自定义名/系统时间 OSD），按 UI 一致的 1/2/3/4 宫格布局绘制。
- * - 合成节拍固定 ~15fps（[INTERVAL_MS]），帧时间戳取真实节拍，回放时长=真实时长。
+ * - 合成节拍按设备性能 12–18fps（[intervalMs]），帧时间戳取真实节拍，
+ *   回放时长=真实时长。
  * - 合成、编码都在独立 HandlerThread 串行完成；native 回调线程只拷贝最新帧。
  */
 class CompositeRecorder(private val mediaSaver: MediaSaver) : UvcCameraManager.FrameListener {
@@ -33,10 +34,13 @@ class CompositeRecorder(private val mediaSaver: MediaSaver) : UvcCameraManager.F
         private const val TAG = "composite"
         private const val OUT_W = 1280
         private const val OUT_H = 720
-        private const val FPS_HINT = 15
-        private const val INTERVAL_MS = 66L
         private const val DEFAULT_BITRATE = 7_000_000 // 720p 总录像默认高画质（可被设置覆盖）
     }
+
+    /** 按启动时设备画像决定合成帧率（低端 12fps / 高端 18fps） */
+    private val fpsHint: Int =
+        com.wheeltech.blindcam.domain.DevicePerformance.compositeFps.coerceIn(10, 30)
+    private val intervalMs: Long = (1000L / fpsHint).coerceAtLeast(30L)
 
     /** 一路参与合成的画面：slot 序号、展示名及几何设置；jpeg 为合成时填充的最新帧；
      *  denoiseLevel 为该路独立降噪档位（0关/1弱/2中/3强），与预览/单路录像一致 */
@@ -75,9 +79,13 @@ class CompositeRecorder(private val mediaSaver: MediaSaver) : UvcCameraManager.F
     @Volatile var isRunning = false
         private set
 
+    /** 正在收尾上一段（finish/落盘/删旧段）：此期间禁止立即重新开始，避免状态竞态 */
+    @Volatile private var stopping = false
+
+    val isStopping: Boolean get() = stopping
+
     private var osdName = true
     private var osdClock = true
-    private var osdSpeed = false
     private var frameCount = 0
 
     // 常驻可复用资源，避免每帧分配
@@ -90,20 +98,18 @@ class CompositeRecorder(private val mediaSaver: MediaSaver) : UvcCameraManager.F
         cells: List<Cell>,
         osdName: Boolean,
         osdClock: Boolean,
-        osdSpeed: Boolean,
         videoDirUri: String,
         bitrate: Int = DEFAULT_BITRATE,
         loopEnabled: Boolean = false,
         segmentMinutes: Int = 3,
         keepFreeMb: Int = 1024
     ): Boolean {
-        if (isRunning) return false
+        if (isRunning || stopping) return false
         if (cells.isEmpty()) return false
         return try {
             this.cells = cells
             this.osdName = osdName
             this.osdClock = osdClock
-            this.osdSpeed = osdSpeed
             this.videoDirUri = videoDirUri
             this.targetBitrate = if (bitrate > 0) bitrate else DEFAULT_BITRATE
             this.loopEnabled = loopEnabled
@@ -115,14 +121,15 @@ class CompositeRecorder(private val mediaSaver: MediaSaver) : UvcCameraManager.F
             denoisers.clear()
             cells.forEach { c ->
                 if (c.denoiseLevel > 0)
-                    denoisers[c.slot] = FrameDenoiser(c.denoiseLevel, budgetMs = (1000 / FPS_HINT))
+                    denoisers[c.slot] = FrameDenoiser(c.denoiseLevel, budgetMs = (1000 / fpsHint))
             }
             frameCount = 0
-            // 开录前先确保空间充足（循环模式删最旧），避免一开始就写满
-            if (this.loopEnabled) enforceFreeSpace()
+            // 开录前先确保空间充足（循环模式删最旧）。目录扫描放到合成线程，
+            // 避免几百个分段时在 UI 线程做文件扫描造成点“总录像”卡顿。
+            if (this.loopEnabled) handler.post { enforceFreeSpace() }
             openSegment()
             isRunning = true
-            handler.postDelayed(compositeTask, INTERVAL_MS)
+            handler.postDelayed(compositeTask, intervalMs)
             Logger.i(
                 TAG, "总录像开始 cells=${cells.size} bitrate=${this.targetBitrate / 1000}kbps " +
                     "loop=$loopEnabled seg=${segmentMinutes}min keepFree=${keepFreeMb}MB -> $displayName"
@@ -139,7 +146,7 @@ class CompositeRecorder(private val mediaSaver: MediaSaver) : UvcCameraManager.F
         val ts = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         displayName = "ALL_${ts}_${OUT_W}x${OUT_H}.mp4"
         cacheFile = mediaSaver.newCacheFile("mp4")
-        recorder = Mp4Recorder(cacheFile!!, OUT_W, OUT_H, targetBitrate, FPS_HINT)
+        recorder = Mp4Recorder(cacheFile!!, OUT_W, OUT_H, targetBitrate, fpsHint)
         segmentStartMs = SystemClock.elapsedRealtime()
     }
 
@@ -156,6 +163,11 @@ class CompositeRecorder(private val mediaSaver: MediaSaver) : UvcCameraManager.F
             val out = rec?.finish()
             if (out != null && cache != null) {
                 result = mediaSaver.publishVideo(cache, displayName, videoDirUri)
+                // 记录本段参与合成的画面名称与路数：回看时按录制时的画面切换，
+                // 即使摄像头已拔掉/顺序变化也能显示正确的自定义名称与裁剪区域。
+                mediaSaver.publishCompositeMeta(
+                    displayName, cells.map { it.name }, OUT_W, OUT_H, videoDirUri
+                )
                 Logger.i(TAG, "分段已保存 frames=$frameCount -> $result")
             }
         } catch (t: Throwable) {
@@ -191,14 +203,19 @@ class CompositeRecorder(private val mediaSaver: MediaSaver) : UvcCameraManager.F
             return
         }
         isRunning = false
+        stopping = true
         handler.removeCallbacks(compositeTask)
         handler.post {
-            // 收尾最后一个分段（循环模式下每个分段已在录制中陆续发布）
-            val result = finishAndPublishSegment()
-            if (result != null) {
-                cb(Result.success(result))
-            } else {
-                cb(Result.failure(IllegalStateException("未录制到任何帧")))
+            try {
+                // 收尾最后一个分段（循环模式下每个分段已在录制中陆续发布）
+                val result = finishAndPublishSegment()
+                if (result != null) {
+                    cb(Result.success(result))
+                } else {
+                    cb(Result.failure(IllegalStateException("未录制到任何帧")))
+                }
+            } finally {
+                stopping = false
             }
         }
     }
@@ -225,7 +242,7 @@ class CompositeRecorder(private val mediaSaver: MediaSaver) : UvcCameraManager.F
             } catch (t: Throwable) {
                 Logger.w(TAG, "compose failed: ${t.message}")
             }
-            handler.postDelayed(this, INTERVAL_MS)
+            handler.postDelayed(this, intervalMs)
         }
     }
 
@@ -250,8 +267,7 @@ class CompositeRecorder(private val mediaSaver: MediaSaver) : UvcCameraManager.F
             OsdRenderer.draw(
                 canvas, OUT_W, OUT_H,
                 OsdRenderer.Overlay(
-                    showName = false, name = null,
-                    showClock = true, showSpeed = false, speedText = null
+                    showName = false, name = null, showClock = true
                 )
             )
         }
@@ -320,8 +336,7 @@ class CompositeRecorder(private val mediaSaver: MediaSaver) : UvcCameraManager.F
                 val overlay = OsdRenderer.Overlay(
                     showName = true,
                     name = cell.name,
-                    showClock = false,
-                    showSpeed = false
+                    showClock = false
                 )
                 // 用裁剪区域建立临时画布坐标，OsdRenderer 在该区域内绘制
                 val sx2 = dest.left
@@ -390,28 +405,10 @@ class CompositeRecorder(private val mediaSaver: MediaSaver) : UvcCameraManager.F
         return best
     }
 
-    /** 与 MainActivity.cellSpec 相同的布局矩形（输出画布坐标系） */
+    /** 与预览/回看一致的布局矩形（统一由 [GridLayoutSpec] 提供） */
     private fun cellRect(index: Int, n: Int): android.graphics.Rect {
-        return when (n) {
-            1 -> android.graphics.Rect(0, 0, OUT_W, OUT_H)
-            2 -> when (index) {
-                0 -> android.graphics.Rect(0, 0, OUT_W / 2, OUT_H)
-                else -> android.graphics.Rect(OUT_W / 2, 0, OUT_W, OUT_H)
-            }
-            3 -> when (index) {
-                0 -> android.graphics.Rect(0, 0, OUT_W, OUT_H / 2)
-                1 -> android.graphics.Rect(0, OUT_H / 2, OUT_W / 2, OUT_H)
-                else -> android.graphics.Rect(OUT_W / 2, OUT_H / 2, OUT_W, OUT_H)
-            }
-            else -> {
-                val col = index % 2
-                val row = index / 2
-                android.graphics.Rect(
-                    col * OUT_W / 2, row * OUT_H / 2,
-                    (col + 1) * OUT_W / 2, (row + 1) * OUT_H / 2
-                )
-            }
-        }
+        val r = com.wheeltech.blindcam.domain.GridLayoutSpec.rect(n, index, OUT_W, OUT_H)
+        return android.graphics.Rect(r.left, r.top, r.right, r.bottom)
     }
 
     fun shutdown() {
@@ -428,3 +425,4 @@ class CompositeRecorder(private val mediaSaver: MediaSaver) : UvcCameraManager.F
         runCatching { reusableCanvas.recycle() }
     }
 }
+

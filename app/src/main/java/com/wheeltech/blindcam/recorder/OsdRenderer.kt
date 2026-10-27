@@ -12,7 +12,8 @@ import java.util.Locale
  * 录像 / 拍照画面叠加信息（OSD）：
  * - 左上角：用户自定义名称
  * - 右上角：系统时间 yyyy-MM-dd HH:mm:ss
- * - 左下角：车速（当前无车速数据源，预留）
+ *
+ * 车速叠加已按需求永久移除（无车速数据源，也不再提供开关）。
  *
  * 白字黑描边，保证在任意画面背景上都清晰可读；字号按画面高度等比缩放。
  */
@@ -22,12 +23,9 @@ object OsdRenderer {
     data class Overlay(
         val showName: Boolean,
         val name: String?,
-        val showClock: Boolean,
-        val showSpeed: Boolean,
-        /** 车速文本（含单位，如 "42 km/h"）；无数据源时传 null */
-        val speedText: String? = null
+        val showClock: Boolean
     ) {
-        val any: Boolean get() = showName || showClock || showSpeed
+        val any: Boolean get() = showName || showClock
     }
 
     private val timeFmt = ThreadLocal.withInitial {
@@ -53,8 +51,6 @@ object OsdRenderer {
 
         // 垂直基线：顶部文字
         val topY = pad + textSize
-        // 底部文字基线
-        val bottomY = height - pad
 
         if (o.showName && !o.name.isNullOrBlank()) {
             drawText(canvas, o.name, pad, topY, Paint.Align.LEFT)
@@ -62,9 +58,6 @@ object OsdRenderer {
         if (o.showClock) {
             val t = timeFmt.get()?.format(Date()) ?: ""
             drawText(canvas, t, width - pad, topY, Paint.Align.RIGHT)
-        }
-        if (o.showSpeed && !o.speedText.isNullOrBlank()) {
-            drawText(canvas, o.speedText, pad, bottomY, Paint.Align.LEFT)
         }
     }
 

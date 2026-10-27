@@ -37,6 +37,9 @@ class PreviewRenderer(
 
     private val instanceId = seq.getAndIncrement()
 
+    /** 当前画框是否在可见宫格中；隐藏时直接丢弃帧，省解码/降噪开销 */
+    @Volatile var active: Boolean = true
+
     /** 水平镜像（外部可读写，状态持久化） */
     @Volatile var mirrorH: Boolean = mirrorHInit
     /** 旋转角度（0/90/180/270，外部可读写） */
@@ -52,7 +55,13 @@ class PreviewRenderer(
     private var dnThread: HandlerThread? = null
     private var dnHandler: Handler? = null
 
-    // 双缓冲输入
+    /** 该路当前帧率，用于按帧间隔计算降噪预算（需求：每个画框按自身分辨率/帧率独立处理） */
+    @Volatile private var targetFps: Int = 30
+
+    /** Activity 退出后禁止再触碰 Surface / 位图，避免 release 与解码线程竞态 */
+    @Volatile private var released = false
+
+    // 双缓冲输入（RGB_565：4K 时内存减半，降噪仍按 ARGB 输出）
     private var srcA: Bitmap? = null
     private var srcB: Bitmap? = null
     private var bufW = 0
@@ -67,21 +76,31 @@ class PreviewRenderer(
     /** 原图回退截止时间（毫秒） */
     @Volatile private var rawFallbackUntil = 0L
 
-    fun setDenoiseLevel(level: Int) {
+    /**
+     * 设置降噪档位。
+     * @param fps 该画框当前帧率；预算按 1000/fps 计算（15fps 比 60fps 有更多处理时间）
+     */
+    fun setDenoiseLevel(level: Int, fps: Int = 30) {
         val l = level.coerceIn(0, 3)
+        targetFps = fps.coerceIn(1, 60)
+        denoiser?.apply {
+            setBudget(budgetMsFor(targetFps))
+            setLevel(l)
+        }
         if (l == denoiseLevel) return
         denoiseLevel = l
         if (l == 0) {
-            // 关闭：释放降噪资源（当前帧之后直接画原图）
+            // 关闭：立即停止投递；不在这里回收双缓冲——降噪线程可能正在使用，
+            // 回收会在 release() 时统一完成（避免高档切低档瞬间偶发 use-after-recycle）。
             pending.set(null)
-            denoiser?.release()
-            denoiser = null
-            srcA?.recycle(); srcB?.recycle()
-            srcA = null; srcB = null
-            bufW = 0; bufH = 0
-        } else {
-            denoiser?.setLevel(l)
         }
+    }
+
+    private fun budgetMsFor(fps: Int): Int {
+        val base = 1000f / fps.coerceAtLeast(1)
+        // 按启动时设备画像放宽/收紧预算：低端车机多用几毫秒换取不回落原图
+        val scaled = base * com.wheeltech.blindcam.domain.DevicePerformance.denoiseBudgetScale
+        return scaled.toInt().coerceIn(12, 160)
     }
 
     /**
@@ -90,12 +109,18 @@ class PreviewRenderer(
      * 降噪开启：拷贝到空闲缓冲并投递，立即返回（不阻塞调用线程）。
      */
     fun submitBitmap(bmp: Bitmap) {
+        if (released || !active) return
         val l = denoiseLevel
         if (l == 0 || System.currentTimeMillis() < rawFallbackUntil) {
             drawDirect(bmp)
             return
         }
         ensureBuffers(bmp.width, bmp.height, l)
+        // ensureBuffers 可能因 OOM 自动关闭降噪：本帧直接画原图，保证预览不断流
+        if (denoiseLevel == 0 || denoiser == null) {
+            drawDirect(bmp)
+            return
+        }
 
         // 选一个既不在处理、也不在排队的缓冲
         val using = inUse.get()
@@ -129,6 +154,7 @@ class PreviewRenderer(
     }
 
     private fun processTask() {
+        if (released) return
         val src = pending.getAndSet(null)
         if (src == null) {
             scheduled.set(false)
@@ -137,9 +163,9 @@ class PreviewRenderer(
         inUse.set(src)
         try {
             val dn = denoiser
-            if (dn != null) {
+            if (dn != null && !released) {
                 val out = dn.process(src)
-                if (out !== src) drawDirect(out)
+                if (out !== src && !released) drawDirect(out)
                 if (dn.overBudget) {
                     // 最粗块仍超时：进入原图回退窗口，保证预览不冻结
                     rawFallbackUntil = System.currentTimeMillis() + RAW_FALLBACK_MS
@@ -151,6 +177,10 @@ class PreviewRenderer(
             Logger.w(TAG, "denoise task failed: ${t.message}")
         } finally {
             inUse.set(null)
+            if (denoiseLevel == 0) {
+                // 运行中关闭降噪：等当前帧处理完再释放降噪位图，避免 use-after-recycle
+                releaseDenoiseResources()
+            }
             val more = pending.get()
             if (more != null && scheduled.compareAndSet(false, true)) {
                 dnHandler?.post { processTask() }
@@ -160,10 +190,27 @@ class PreviewRenderer(
         }
     }
 
+    /** 页面不可见时暂停绘制：等待正在进行的 frame 画完，避免 Activity stop 时 Surface 被销毁的竞态 */
+    fun pause(timeoutMs: Long = 300) {
+        active = false
+        pending.set(null)
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (!painting.compareAndSet(false, true)) {
+            if (System.currentTimeMillis() > deadline) break
+            try { Thread.sleep(1) } catch (_: InterruptedException) { break }
+        }
+        painting.set(false)
+    }
+
     /** 清黑屏（设备切换 / 面板被移出时调用，避免定格残留） */
     fun clear() {
+        if (released) return
         if (!textureView.isAvailable) return
-        if (!painting.compareAndSet(false, true)) return
+        if (!painting.compareAndSet(false, true)) {
+            // 降噪/绘制线程正在画：等它结束后再清一次，否则断开瞬间可能留下定格帧
+            textureView.post { clear() }
+            return
+        }
         try {
             val surface = obtainSurface() ?: return
             val canvas = surface.lockHardwareCanvas()
@@ -181,6 +228,7 @@ class PreviewRenderer(
 
     /** 直接绘制位图（持有绘制锁，跨线程安全） */
     private fun drawDirect(bmp: Bitmap) {
+        if (released) return
         if (!textureView.isAvailable) return
         if (!painting.compareAndSet(false, true)) return
         try {
@@ -222,38 +270,95 @@ class PreviewRenderer(
         }
     }
 
+    @Synchronized
     private fun ensureBuffers(w: Int, h: Int, level: Int) {
-        if (w == bufW && h == bufH && denoiser != null) {
-            denoiser?.setLevel(level)
+        if (released) {
+            denoiseLevel = 0
             return
         }
-        srcA?.recycle(); srcB?.recycle()
-        srcA = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        srcB = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        bufW = w; bufH = h
-        denoiser?.release()
-        // 预览预算：按 30fps 目标约 30ms；弱设备可由 FrameDenoiser 自适应块大小
-        val dn = FrameDenoiser(level, budgetMs = 30)
-        denoiser = dn
-        if (dnThread == null) {
-            val t = HandlerThread("denoise-$instanceId").apply { start() }
-            dnThread = t
-            dnHandler = Handler(t.looper)
+        if (w == bufW && h == bufH && denoiser != null) {
+            denoiser?.setLevel(level)
+            denoiser?.setBudget(budgetMsFor(targetFps))
+            return
+        }
+        releaseDenoiseResources()
+        try {
+            srcA = Bitmap.createBitmap(w, h, Bitmap.Config.RGB_565)
+            srcB = Bitmap.createBitmap(w, h, Bitmap.Config.RGB_565)
+            bufW = w; bufH = h
+            // 预算按该画框实际帧率；弱设备由 FrameDenoiser 自适应块大小
+            denoiser = FrameDenoiser(level, budgetMs = budgetMsFor(targetFps))
+            if (dnThread == null) {
+                val t = HandlerThread("denoise-$instanceId").apply { start() }
+                dnThread = t
+                dnHandler = Handler(t.looper)
+            }
+        } catch (oom: OutOfMemoryError) {
+            Logger.e(TAG, "allocate denoise buffers failed ${w}x$h, fallback raw", oom)
+            releaseDenoiseResources()
+            denoiseLevel = 0
+        } catch (t: Throwable) {
+            Logger.e(TAG, "allocate denoise buffers failed ${w}x$h, fallback raw", t)
+            releaseDenoiseResources()
+            denoiseLevel = 0
         }
     }
 
-    fun release() {
-        try {
-            dnThread?.quitSafely()
-        } catch (_: Throwable) {}
-        dnThread = null
-        dnHandler = null
-        denoiser?.release()
+    /** 只释放降噪位图/实例；HandlerThread 在 release() 里退出 */
+    @Synchronized
+    private fun releaseDenoiseResources() {
+        pending.set(null)
+        runCatching { denoiser?.release() }
         denoiser = null
-        srcA?.recycle(); srcB?.recycle()
+        runCatching { srcA?.recycle() }
+        runCatching { srcB?.recycle() }
         srcA = null; srcB = null
         bufW = 0; bufH = 0
-        drawSurface?.release()
-        drawSurface = null
+    }
+
+    @Synchronized
+    fun release() {
+        if (released) return
+        released = true
+        // 关键：等待正在进行的 frame 绘制结束，再 release 它正在使用的 Surface。
+        // 否则 RenderThread/GLThread 仍可能持有已释放的 Surface，vivo/Android17 上
+        // 会触发 "Pointer tag ... truncated" 的 native SIGABRT。
+        val deadline = System.currentTimeMillis() + 200
+        while (!painting.compareAndSet(false, true)) {
+            if (System.currentTimeMillis() > deadline) break
+            try { Thread.sleep(1) } catch (_: InterruptedException) { break }
+        }
+        try {
+            runCatching { drawSurface?.release() }
+            drawSurface = null
+        } finally {
+            painting.set(false)
+        }
+        val dn = denoiser
+        val a = srcA
+        val b = srcB
+        val t = dnThread
+        val h = dnHandler
+        denoiser = null
+        srcA = null
+        srcB = null
+        bufW = 0; bufH = 0
+        pending.set(null)
+        dnThread = null
+        dnHandler = null
+        // 等降噪线程上已排队的任务跑完再回收位图，避免 use-after-recycle
+        if (h != null) {
+            h.post {
+                runCatching { dn?.release() }
+                runCatching { a?.recycle() }
+                runCatching { b?.recycle() }
+                runCatching { t?.quitSafely() }
+            }
+        } else {
+            runCatching { dn?.release() }
+            runCatching { a?.recycle() }
+            runCatching { b?.recycle() }
+            runCatching { t?.quitSafely() }
+        }
     }
 }

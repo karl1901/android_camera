@@ -162,20 +162,38 @@ class UvcCameraManager private constructor(context: Context) {
 
         val cam = UvcCamera(slot, device, connection, handle)
         cameras[slot] = cam
+        runCatching {
+            cam.usbSpeed = NativeUvc.nativeGetDeviceSpeed(handle)
+            Logger.i(
+                TAG,
+                "usb speed slot=$slot speed=${cam.usbSpeed} " +
+                    when (cam.usbSpeed) {
+                        1 -> "(Full 12Mbps)"
+                        2 -> "(High 480Mbps / USB2.0)"
+                        3 -> "(Super 5Gbps / USB3.0)"
+                        4 -> "(Super+ 10Gbps)"
+                        else -> "(unknown)"
+                    }
+            )
+        }
         // 查询摄像头支持的分辨率/帧率（失败不阻塞打开，后续可重试）
         runCatching {
             val raw = NativeUvc.nativeQueryCapabilities(handle)
             cam.capabilities = StreamProfile.parseCapabilities(raw)
-            Logger.i(TAG, "capabilities slot=$slot count=${cam.capabilities.size}")
+            Logger.i(
+                TAG,
+                "capabilities slot=$slot count=${cam.capabilities.size} " +
+                    cam.capabilities.take(8).joinToString { it.display }
+            )
         }.onFailure { Logger.w(TAG, "queryCapabilities failed: ${it.message}") }
         Logger.i(TAG, "camera opened slot=$slot ${device.displayText}")
         return OpenResult.Success(slot)
     }
 
-    /** 查找设备当前所在槽位，未打开返回 -1 */
-    fun findDeviceSlot(deviceId: Int): Int {
+    /** 查找设备当前所在槽位（按稳定标识，不受系统 deviceId 复用影响），未打开返回 -1 */
+    fun findDeviceSlot(device: UsbDeviceInfo): Int {
         for (slot in 0 until SLOT_COUNT) {
-            if (cameras[slot]?.info?.deviceId == deviceId) return slot
+            if (cameras[slot]?.info?.stableKey == device.stableKey) return slot
         }
         return -1
     }
@@ -190,12 +208,12 @@ class UvcCameraManager private constructor(context: Context) {
     fun assignDeviceToSlot(targetSlot: Int, device: UsbDeviceInfo): OpenResult = synchronized(streamLock) {
         if (targetSlot !in 0 until SLOT_COUNT)
             return OpenResult.Failure(targetSlot, "槽位非法")
-        val currentSlot = findDeviceSlot(device.deviceId)
+        val currentSlot = findDeviceSlot(device)
         if (currentSlot == targetSlot) return OpenResult.Success(targetSlot)
 
         // 目标槽位有其他设备，先关闭
         val occupant = cameras[targetSlot]
-        if (occupant != null && occupant.info.deviceId != device.deviceId) {
+        if (occupant != null && occupant.info.stableKey != device.stableKey) {
             closeCamera(targetSlot)
         }
 
@@ -224,10 +242,10 @@ class UvcCameraManager private constructor(context: Context) {
      * 必须显式传入要协商的 [profile]（来自该设备的能力列表）。
      */
     fun startStream(slot: Int, profile: StreamProfile): Boolean {
-        val camera = cameras[slot] ?: return false
-        if (camera.streaming && camera.currentProfile == profile) return true
-        // 同步：防止多路/重复触发并发协商导致取流失败
+        // 槽位可能在等待锁期间被关闭/换设备，必须在锁内重新取
         synchronized(streamLock) {
+            val camera = cameras[slot] ?: return false
+            if (camera.streaming && camera.currentProfile == profile) return true
             if (camera.streaming) {
                 NativeUvc.nativeStopStream(camera.nativeHandle)
                 camera.streaming = false
@@ -259,8 +277,8 @@ class UvcCameraManager private constructor(context: Context) {
 
     /** 停止某路取流 */
     fun stopStream(slot: Int) {
-        val camera = cameras[slot] ?: return
         synchronized(streamLock) {
+            val camera = cameras[slot] ?: return
             if (camera.streaming) {
                 NativeUvc.nativeStopStream(camera.nativeHandle)
                 camera.streaming = false

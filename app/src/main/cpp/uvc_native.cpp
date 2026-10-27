@@ -585,6 +585,25 @@ Java_com_wheeltech_blindcam_native_NativeUvc_nativeSetCameraId(
 #endif
 }
 
+// 查询设备当前 USB 链路速度：1=Full 12Mbps, 2=High 480Mbps, 3=Super 5Gbps, 4=Super+ 10Gbps
+extern "C"
+JNIEXPORT jint JNICALL
+Java_com_wheeltech_blindcam_native_NativeUvc_nativeGetDeviceSpeed(
+        JNIEnv *, jobject, jlong sessionHandle) {
+#if UVC_HAVE_LIBUVC
+    auto *session = reinterpret_cast<UvcSession *>(sessionHandle);
+    if (!session || !session->devh) return 0;
+    libusb_device_handle *h = uvc_get_libusb_handle(session->devh);
+    if (!h) return 0;
+    libusb_device *d = libusb_get_device(h);
+    if (!d) return 0;
+    return static_cast<jint>(libusb_get_device_speed(d));
+#else
+    (void) sessionHandle;
+    return 0;
+#endif
+}
+
 // 查询摄像头支持的 MJPEG 分辨率与帧率。
 // 返回编码字符串："MJPEG;WxH:fps,fps;WxH:fps"，无能力返回空串。
 extern "C"

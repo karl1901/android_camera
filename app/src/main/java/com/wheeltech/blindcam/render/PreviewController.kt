@@ -105,6 +105,8 @@ class PreviewController(
             // 没有对应槽位，直接丢弃
             return
         }
+        // 隐藏画框（单路/少路布局）不再解码，降低 CPU/内存/发热
+        if (renderers[frame.cameraId]?.active != true) return
         worker.submit(frame)
     }
 

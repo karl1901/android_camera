@@ -1,6 +1,7 @@
 package com.wheeltech.blindcam.ui.viewer
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.graphics.PointF
 import android.util.AttributeSet
@@ -39,6 +40,7 @@ class ZoomableImageView @JvmOverloads constructor(
     private var origX = 0f
     private var origY = 0f
     private var oldMeasured = 0
+    private var fitted = false
 
     var onSingleTap: (() -> Unit)? = null
 
@@ -63,8 +65,9 @@ class ZoomableImageView @JvmOverloads constructor(
         }
 
         override fun onDoubleTap(e: MotionEvent): Boolean {
-            val target = if (saveScale > minScale * 1.05f) minScale else 2.5f
-            val factor = target / saveScale
+            if (!fitted) fitCenter()
+            val target = if (saveScale > minScale * 1.05f) minScale else minScale * 2.5f
+            val factor = target / saveScale.coerceAtLeast(0.0001f)
             matrixTransform.postScale(factor, factor, e.x, e.y)
             saveScale = target
             clamp()
@@ -103,10 +106,19 @@ class ZoomableImageView @JvmOverloads constructor(
         return true
     }
 
+    override fun setImageBitmap(bm: Bitmap?) {
+        super.setImageBitmap(bm)
+        // 图片是在 onLayout 之后异步加载进来的：必须重置 fitted，否则 imageMatrix
+        // 仍是初始单位矩阵，图片会按原始像素贴在左上角（用户反馈的“显示逻辑不对”）
+        fitted = false
+        requestLayout()
+        post { fitCenter() }
+    }
+
     /** 图片尺寸确定后，按 fitCenter 居中放置 */
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         super.onLayout(changed, left, top, right, bottom)
-        if (changed || oldMeasured != width) {
+        if (!fitted || changed || oldMeasured != width) {
             fitCenter()
             oldMeasured = width
         }
@@ -130,12 +142,14 @@ class ZoomableImageView @JvmOverloads constructor(
         val ty = (vh - scaledH) / 2f
         matrixTransform.postTranslate(tx, ty)
         imageMatrix = matrixTransform
-        saveScale = 1f
+        saveScale = scale
         minScale = scale
+        maxScale = scale * 5f
         origWidth = scaledW
         origHeight = scaledH
         origX = tx
         origY = ty
+        fitted = true
     }
 
     /** 限制平移/缩放，使图片始终铺满视图、不出现空白边 */

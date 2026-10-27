@@ -7,20 +7,33 @@ import android.net.Uri
 import android.os.Environment
 import android.provider.DocumentsContract
 import com.wheeltech.blindcam.util.Logger
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 
 /**
- * 媒体保存：拍照 JPEG、录像文件落地。
+ * 媒体保存：拍照 JPEG、录像 MP4 落地。
  *
  * 保存位置支持两种来源：
  * 1. 用户通过 SAF（OpenDocumentTree）选择的目录树 Uri（拍照/录像各自独立配置）
  * 2. 未配置时退回应用私有外部目录（无需任何存储权限，卸载自动删除）
  *
- * 录像（AVI）因为需要在结束时回填文件头，先用可随机读写的私有缓存文件，
- * 录制结束再一次性拷贝到目标目录（兼容 SAF 的流式输出）。
+ * 录像先写入可随机读写的私有缓存文件，录制结束再整体发布到目标目录
+ * （SAF 只能流式写，无法边录边回填 moov）。
  */
 class MediaSaver(private val context: Context) {
+
+    /**
+     * 总录像的分段元数据：记录录制时参与合成的画面名称/路数。
+     * 回看时优先使用它，而不是“当前还插着的摄像头”，这样拔掉摄像头后
+     * 仍能显示正确的自定义名称与裁剪区域。
+     */
+    data class CompositeMeta(
+        val cellNames: List<String>,
+        val width: Int,
+        val height: Int
+    )
 
     companion object {
         private const val TAG = "media-saver"
@@ -150,6 +163,129 @@ class MediaSaver(private val context: Context) {
     }
 
     // ------------------------------------------------------------------
+    // 总录像分段元数据（.json sidecar）
+    // ------------------------------------------------------------------
+
+    private fun metaName(videoFileName: String): String =
+        videoFileName.substringBeforeLast('.', videoFileName) + ".json"
+
+    /**
+     * 发布总录像分段元数据。失败只记日志，不影响录像文件本身。
+     * 文件名与 MP4 同名（扩展名 .json），相册扫描只认 mp4/jpg，不会把 json 当成媒体。
+     */
+    fun publishCompositeMeta(
+        videoFileName: String,
+        cellNames: List<String>,
+        width: Int,
+        height: Int,
+        videoDirUri: String
+    ) {
+        val json = runCatching {
+            JSONObject().apply {
+                put("version", 1)
+                put("width", width)
+                put("height", height)
+                put("cells", JSONArray(cellNames))
+            }.toString()
+        }.getOrNull() ?: return
+        val name = metaName(videoFileName)
+        runCatching {
+            if (videoDirUri.isNotBlank()) {
+                val tree = Uri.parse(videoDirUri)
+                val doc = createDocument(tree, "application/json", name)
+                    ?: throw IllegalStateException("无法创建元数据文件")
+                context.contentResolver.openOutputStream(doc, "w")?.use {
+                    it.write(json.toByteArray(Charsets.UTF_8))
+                }
+            } else {
+                File(defaultVideoDir(), name).writeText(json, Charsets.UTF_8)
+            }
+            Logger.i(TAG, "composite meta saved $name cells=${cellNames.size}")
+        }.onFailure {
+            Logger.w(TAG, "composite meta save failed $name: ${it.message}")
+        }
+    }
+
+    /**
+     * 读取总录像分段元数据。
+     * @param videoFileName 录制文件名（ALL_...mp4）
+     * @param videoDirUri   当前录像目录（SAF；空=私有默认目录）
+     * @param file          私有目录文件（SAF 项为 null）
+     */
+    fun readCompositeMeta(
+        videoFileName: String,
+        videoDirUri: String,
+        file: File?
+    ): CompositeMeta? {
+        val name = metaName(videoFileName)
+        val text = runCatching {
+            if (file != null) {
+                File(file.parentFile, name).takeIf { it.isFile }?.readText(Charsets.UTF_8)
+            } else if (videoDirUri.isNotBlank()) {
+                val tree = Uri.parse(videoDirUri)
+                val doc = findChildUri(tree, name) ?: return null
+                context.contentResolver.openInputStream(doc)?.use {
+                    it.bufferedReader(Charsets.UTF_8).readText()
+                }
+            } else {
+                File(defaultVideoDir(), name).takeIf { it.isFile }?.readText(Charsets.UTF_8)
+            }
+        }.getOrNull() ?: return null
+        return runCatching {
+            val o = JSONObject(text)
+            val arr = o.optJSONArray("cells") ?: JSONArray()
+            val names = ArrayList<String>(arr.length())
+            for (i in 0 until arr.length()) names.add(arr.optString(i))
+            CompositeMeta(
+                cellNames = names,
+                width = o.optInt("width", 1280),
+                height = o.optInt("height", 720)
+            )
+        }.onFailure { Logger.w(TAG, "parse composite meta failed: ${it.message}") }
+            .getOrNull()
+    }
+
+    /** 删除总录像时同时删除同名元数据，避免目录里堆积孤儿 json */
+    fun deleteCompositeMeta(videoFileName: String, videoDirUri: String, file: File?) {
+        val name = metaName(videoFileName)
+        runCatching {
+            if (file != null) {
+                File(file.parentFile, name).delete()
+            } else if (videoDirUri.isNotBlank()) {
+                findChildUri(Uri.parse(videoDirUri), name)?.let {
+                    DocumentsContract.deleteDocument(context.contentResolver, it)
+                }
+            } else {
+                File(defaultVideoDir(), name).delete()
+            }
+        }
+    }
+
+    /** 在 SAF 目录树中按显示名查找子文档 */
+    private fun findChildUri(tree: Uri, name: String): Uri? {
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(
+            tree, DocumentsContract.getTreeDocumentId(tree)
+        )
+        context.contentResolver.query(
+            children,
+            arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME
+            ),
+            null, null, null
+        )?.use { c ->
+            val idIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+            val nameIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            while (c.moveToNext()) {
+                if (nameIdx >= 0 && c.getString(nameIdx) == name) {
+                    return DocumentsContract.buildDocumentUriUsingTree(tree, c.getString(idIdx))
+                }
+            }
+        }
+        return null
+    }
+
+    // ------------------------------------------------------------------
     // 循环录像：空间查询 / 总录像段列举 / 删除最旧段
     // ------------------------------------------------------------------
 
@@ -163,9 +299,10 @@ class MediaSaver(private val context: Context) {
         }.getOrDefault(Long.MAX_VALUE / (1024L * 1024L))
     }
 
-    /** 总录像分段（ALL_ 开头，按时间从旧到新），用于循环覆盖时删最旧。 */
+    /** 总录像分段（ALL_ 开头，按时间从旧到新），用于循环覆盖时删最旧。无需读取时长。 */
     fun compositeSegments(treeUri: String): List<GalleryMedia> =
-        scanVideos(treeUri).filter { it.kind == GalleryMedia.Kind.ALL }
+        scanVideos(treeUri, probeDurations = false)
+            .filter { it.kind == GalleryMedia.Kind.ALL }
             .sortedBy { it.timeMs }
 
     /**
@@ -174,48 +311,56 @@ class MediaSaver(private val context: Context) {
      * - 私有目录项（[GalleryMedia.file] 非空）：file.delete()
      */
     fun deleteMedia(media: GalleryMedia): Boolean {
-        media.uri?.let { u ->
-            return runCatching {
+        val deleted = media.uri?.let { u ->
+            runCatching {
                 DocumentsContract.deleteDocument(context.contentResolver, u)
             }.getOrDefault(false)
+        } ?: media.file?.let { f ->
+            runCatching { if (f.exists()) f.delete() else false }.getOrDefault(false)
+        } ?: false
+        if (deleted && media.isVideo && media.kind == GalleryMedia.Kind.ALL) {
+            deleteCompositeMeta(media.name, media.treeUri.orEmpty(), media.file)
         }
-        media.file?.let { f ->
-            return runCatching { if (f.exists()) f.delete() else false }.getOrDefault(false)
-        }
-        return false
+        return deleted
     }
 
     /** 删除指定文件名的录像（私有目录按名删除；SAF 目录按 displayName 定位后删除）。 */
     fun deleteVideoByName(treeUri: String, name: String): Boolean {
-        if (treeUri.isBlank()) {
-            return runCatching { File(defaultVideoDir(), name).delete() }.getOrDefault(false)
-        }
-        return runCatching {
-            val tree = Uri.parse(treeUri)
-            val children = DocumentsContract.buildChildDocumentsUriUsingTree(
-                tree, DocumentsContract.getTreeDocumentId(tree)
-            )
-            var deleted = false
-            context.contentResolver.query(
-                children,
-                arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                    DocumentsContract.Document.COLUMN_DISPLAY_NAME),
-                null, null, null
-            )?.use { c ->
-                val idIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
-                val nameIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
-                while (c.moveToNext()) {
-                    if (c.getString(nameIdx) == name) {
-                        val docUri = DocumentsContract.buildDocumentUriUsingTree(
-                            tree, c.getString(idIdx)
-                        )
-                        deleted = DocumentsContract.deleteDocument(context.contentResolver, docUri)
-                        break
+        val deleted = if (treeUri.isBlank()) {
+            runCatching { File(defaultVideoDir(), name).delete() }.getOrDefault(false)
+        } else {
+            runCatching {
+                val tree = Uri.parse(treeUri)
+                val children = DocumentsContract.buildChildDocumentsUriUsingTree(
+                    tree, DocumentsContract.getTreeDocumentId(tree)
+                )
+                var ok = false
+                context.contentResolver.query(
+                    children,
+                    arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                        DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                    null, null, null
+                )?.use { c ->
+                    val idIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                    val nameIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                    while (c.moveToNext()) {
+                        if (c.getString(nameIdx) == name) {
+                            val docUri = DocumentsContract.buildDocumentUriUsingTree(
+                                tree, c.getString(idIdx)
+                            )
+                            ok = DocumentsContract.deleteDocument(context.contentResolver, docUri)
+                            break
+                        }
                     }
                 }
-            }
-            deleted
-        }.getOrDefault(false)
+                ok
+            }.getOrDefault(false)
+        }
+        if (deleted) {
+            // 同步清理总录像的 .json 元数据，避免循环覆盖后留下孤儿文件
+            deleteCompositeMeta(name, treeUri, null)
+        }
+        return deleted
     }
 
     // ------------------------------------------------------------------
@@ -275,7 +420,12 @@ class MediaSaver(private val context: Context) {
             val acc = c.getOrNull(4)?.toFloatOrNull() ?: 0f
             val spd = c.getOrNull(5)?.toFloatOrNull() ?: 0f
             val brg = c.getOrNull(6)?.toFloatOrNull() ?: 0f
-            list.add(com.wheeltech.blindcam.location.TrackPoint(t, lat, lon, acc, spd, brg))
+            val provider = c.getOrNull(7)?.trim().orEmpty()
+            list.add(
+                com.wheeltech.blindcam.location.TrackPoint(
+                    t, lat, lon, acc, spd, brg, provider
+                )
+            )
         }
         return list
     }
@@ -309,20 +459,33 @@ class MediaSaver(private val context: Context) {
         return out.sortedByDescending { it.timeMs }
     }
 
-    /** 扫描全部视频（私有默认目录 + SAF 自定义目录），含分录像与总录像 */
-    fun scanVideos(videoTreeUri: String): List<GalleryMedia> {
+    /**
+     * 扫描全部视频（私有默认目录 + SAF 自定义目录），含分录像与总录像。
+     * @param probeDurations 是否逐个读取时长；回看页只关心某一天、循环清理只关心文件名，
+     *   传 false 可避免在几百个录像上逐个 MediaMetadataRetriever 造成长时间卡顿。
+     */
+    fun scanVideos(videoTreeUri: String, probeDurations: Boolean = true): List<GalleryMedia> {
         val out = ArrayList<GalleryMedia>()
-        out.addAll(scanPrivate(defaultVideoDir(), wantVideo = true))
-        if (videoTreeUri.isNotBlank()) out.addAll(scanTree(videoTreeUri, wantVideo = true))
+        out.addAll(scanPrivate(defaultVideoDir(), wantVideo = true, probe = probeDurations))
+        if (videoTreeUri.isNotBlank()) {
+            out.addAll(scanTree(videoTreeUri, wantVideo = true, probe = probeDurations))
+        }
         return out.sortedByDescending { it.timeMs }
     }
 
-    private fun scanPrivate(dir: File, wantVideo: Boolean): List<GalleryMedia> {
+    private fun scanPrivate(
+        dir: File,
+        wantVideo: Boolean,
+        probe: Boolean = true
+    ): List<GalleryMedia> {
         val files = dir.listFiles() ?: return emptyList()
         return files.filter { it.isFile && accept(it.name, null, wantVideo) }
             .mapNotNull { f ->
                 GalleryMedia.parse(f.name, wantVideo, f.lastModified())
-                    ?.copy(file = f, durationMs = if (wantVideo) probeDuration(f.absolutePath) else 0L)
+                    ?.copy(
+                        file = f,
+                        durationMs = if (wantVideo && probe) probeDuration(f.absolutePath) else 0L
+                    )
             }
     }
 
@@ -353,7 +516,11 @@ class MediaSaver(private val context: Context) {
         }
     }
 
-    private fun scanTree(treeUri: String, wantVideo: Boolean): List<GalleryMedia> {
+    private fun scanTree(
+        treeUri: String,
+        wantVideo: Boolean,
+        probe: Boolean = true
+    ): List<GalleryMedia> {
         val out = ArrayList<GalleryMedia>()
         runCatching {
             val tree = Uri.parse(treeUri)
@@ -383,7 +550,8 @@ class MediaSaver(private val context: Context) {
                     val last = if (timeIdx >= 0 && !c.isNull(timeIdx)) c.getLong(timeIdx) else 0L
                     GalleryMedia.parse(name, wantVideo, last)
                         ?.copy(uri = docUri,
-                            durationMs = if (wantVideo) probeDurationUri(docUri) else 0L)
+                            treeUri = treeUri,
+                            durationMs = if (wantVideo && probe) probeDurationUri(docUri) else 0L)
                         ?.let { out.add(it) }
                 }
             }

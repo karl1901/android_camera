@@ -28,6 +28,10 @@ class UvcCamera(
     @Volatile
     var currentProfile: StreamProfile? = null
 
+    /** USB 链路速度（1=Full, 2=High 480Mbps, 3=Super 5Gbps, 4=Super+） */
+    @Volatile
+    var usbSpeed: Int = 0
+
     val fd: Int
         get() = connection?.fileDescriptor ?: -1
 

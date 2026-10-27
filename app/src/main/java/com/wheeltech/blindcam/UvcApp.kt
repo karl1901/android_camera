@@ -66,6 +66,8 @@ class UvcApp : Application() {
         super.onCreate()
         Logger.init(this)
         Logger.i("app", "UvcApp onCreate")
+        // 启动即读取设备画像（CPU/内存/屏幕/DPI），供降噪、预警、相册列数等统一调度
+        com.wheeltech.blindcam.domain.DevicePerformance.init(this)
         // 高德 SDK 隐私合规：使用任何地图接口前必须先调用（否则 errorCode 555570、地图不渲染）
         runCatching {
             com.amap.api.maps.MapsInitializer.updatePrivacyShow(this, true, true)
@@ -87,7 +89,7 @@ class UvcApp : Application() {
         supervisor = CameraSupervisor(this, cameraManager, settingsRepository)
         supervisor.start()
         // 盲区预警：运动检测 + 红框 + 提示音，常驻帧监听
-        warningManager = WarningManager(this, supervisor.slots, settingsState)
+        warningManager = WarningManager(supervisor.slots, settingsState)
         cameraManager.addFrameListener(warningManager)
         // 总录像 GPS 轨迹记录（仅总录像期间启动，需定位权限）
         gpsTracker = GpsTracker(this, mediaSaver)
@@ -115,5 +117,11 @@ class UvcApp : Application() {
         AppSettings.ThemeMode.LIGHT -> R.style.Theme_UvcBlindCam_Light
         AppSettings.ThemeMode.DARK -> R.style.Theme_UvcBlindCam_Dark
         AppSettings.ThemeMode.TECH_BLUE -> R.style.Theme_UvcBlindCam_Tech
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // 竖屏启动→横屏 Activity 时同步设备画像里的屏幕尺寸
+        com.wheeltech.blindcam.domain.DevicePerformance.updateDisplay(this)
     }
 }

@@ -1,6 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- 应用自定义主题色（多主题：浅色 / 深色 / 深色+蓝色科技风） -->
+    <!-- 页面主背景（随主题切换渐变：浅色 / 深紫 / 科技蓝） -->
+    <attr name="appBg" format="reference|color" />
+    <!-- 玻璃卡片背景（浅色主题为白色磨砂，深色为暗色玻璃） -->
+    <attr name="cardBg" format="reference|color" />
+    <!-- 顶/底栏玻璃背景（科技蓝主题使用蓝色调） -->
+    <attr name="barBg" format="reference|color" />
+    <!-- 胶囊未选中背景（浅色/深色分别适配） -->
+    <attr name="pillBg" format="reference|color" />
+    <!-- 胶囊选中态渐变（深色/浅色粉紫，科技蓝蓝青） -->
+    <attr name="pillSelectedBg" format="reference|color" />
     <!-- 顶部/底部栏背景 -->
     <attr name="appBar" format="color" />
     <!-- 设备 chip / 设置项圆角背景 -->

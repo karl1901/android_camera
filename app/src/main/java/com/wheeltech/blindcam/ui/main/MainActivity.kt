@@ -212,7 +212,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** 动态创建 MAX_SLOTS 个面板（不立即加入网格，由 applyGrid 控制） */
+    /** 动态创建 MAX_SLOTS 个面板（全部常驻 GridLayout，切换布局只改 span/可见性） */
     private fun buildPanels() {
         val renderers = LinkedHashMap<Int, PreviewRenderer>()
         for (slot in 0 until UvcCameraManager.MAX_SLOTS) {
@@ -222,6 +222,21 @@ class MainActivity : AppCompatActivity() {
             panels.add(panel)
             renderers[slot] = renderer
             wirePanel(panel)
+            // 关键：所有 TextureView 一开始就挂在 GridLayout 上，切换 1/2/3/4 路时
+            // 只修改 GridLayout.LayoutParams 与 visibility，绝不 removeAllViews/重新 addView。
+            // 部分 vivo/Android 17 的 HWUI Vulkan 在 TextureView 被 detach 时仍由
+            // RenderThread 持有 surface，会直接 SIGABRT：
+            // "getFrame() called on a context with no surface!"（切布局闪退根因）
+            ui.root.visibility = View.GONE
+            binding.gridPreview.addView(
+                ui.root,
+                GridLayout.LayoutParams().apply {
+                    width = 0
+                    height = 0
+                    rowSpec = GridLayout.spec(0, 2, 1f)
+                    columnSpec = GridLayout.spec(0, 2, 1f)
+                }
+            )
         }
         previewController = PreviewController(renderers.toMap())
         previewController.start(app.cameraManager)
@@ -345,44 +360,34 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** 网格单元格：返回 (row, col, rowSpan, colSpan) */
-    private fun cellSpec(n: Int, index: Int): IntArray {
-        return when (n) {
-            1 -> intArrayOf(0, 0, 2, 2)
-            2 -> intArrayOf(0, index, 2, 1)
-            3 -> when (index) {
-                0 -> intArrayOf(1, 0, 1, 1)
-                1 -> intArrayOf(1, 1, 1, 1)
-                else -> intArrayOf(0, 0, 1, 2) // 第 3 路顶部横铺
-            }
-            else -> intArrayOf(index / 2, index % 2, 1, 1) // 4 路 2x2
-        }
-    }
-
-    /** 仅在可见槽位序列变化时重建网格，避免每帧 detach 导致 Surface 重建 */
+    /**
+     * 网格布局规则由 [com.wheeltech.blindcam.domain.GridLayoutSpec] 统一提供。
+     * 仅修改常驻面板的 span/可见性，绝不 detach TextureView。
+     */
     private fun applyGrid(visible: List<Int>) {
         val key = visible.joinToString(",")
         if (key == gridKey) return
         gridKey = key
-        binding.gridPreview.removeAllViews()
-        visible.forEachIndexed { index, slot ->
-            val panel = panels[slot]
-            val (row, col, rowSpan, colSpan) = cellSpec(visible.size, index)
-            val lp = GridLayout.LayoutParams().apply {
-                width = 0
-                height = 0
-                rowSpec = GridLayout.spec(row, rowSpan, 1f)
-                columnSpec = GridLayout.spec(col, colSpan, 1f)
+        for (panel in panels) {
+            val index = visible.indexOf(panel.slot)
+            if (index < 0) {
+                // 隐藏而不是移除：TextureView 始终留在视图树里，避免 HWUI 仍持有
+                // 已 detach 的 Surface 导致原生崩溃。重排布局只改 visible。
+                panel.ui.root.visibility = View.GONE
+                panel.lastKey = null
+                panel.renderer.active = false
+                continue
             }
             panel.ui.root.visibility = View.VISIBLE
-            binding.gridPreview.addView(panel.ui.root, lp)
-        }
-        // 被移除的面板清黑，避免再次出现时残留定格
-        for (panel in panels) {
-            if (panel.slot !in visible) {
-                panel.lastKey = null
-                panel.renderer.clear()
-            }
+            panel.renderer.active = true
+            val cell = com.wheeltech.blindcam.domain.GridLayoutSpec.cell(visible.size, index)
+            val lp = (panel.ui.root.layoutParams as? GridLayout.LayoutParams)
+                ?: GridLayout.LayoutParams()
+            lp.width = 0
+            lp.height = 0
+            lp.rowSpec = GridLayout.spec(cell.row, cell.rowSpan, 1f)
+            lp.columnSpec = GridLayout.spec(cell.col, cell.colSpan, 1f)
+            panel.ui.root.layoutParams = lp
         }
     }
 
@@ -393,8 +398,10 @@ class MainActivity : AppCompatActivity() {
         val device = rt.device
         val recording = viewModel.recordingSlots.value.contains(slot)
 
-        // 设备切换时清黑，避免上一路定格
-        if (panel.lastKey != rt.key) {
+        // 设备切换时清黑，避免上一路定格；未取流/重连/失败时也清空，
+        // 防止“画面卡在断开前一帧”被误认为仍在实时预览。
+        val blank = rt.state != CameraSupervisor.SlotState.STREAMING
+        if (panel.lastKey != rt.key || blank) {
             panel.renderer.clear()
             panel.lastKey = rt.key
         }
@@ -402,7 +409,10 @@ class MainActivity : AppCompatActivity() {
         // 镜像 / 旋转 / 每路降噪（直接应用到渲染器，状态持久化）
         panel.renderer.mirrorH = cfg?.mirror ?: false
         panel.renderer.rotationDegrees = cfg?.rotation ?: 0
-        panel.renderer.setDenoiseLevel(cfg?.denoise ?: 0)
+        panel.renderer.setDenoiseLevel(
+            cfg?.denoise ?: 0,
+            rt.activeProfile?.fps ?: 30
+        )
         val primary = themeColor(com.google.android.material.R.attr.colorPrimary)
         panel.ui.btnMirror.backgroundTintList =
             if (cfg?.mirror == true) ColorStateList.valueOf(primary)
@@ -992,6 +1002,24 @@ class MainActivity : AppCompatActivity() {
         WindowInsetsControllerCompat(window, binding.root)
             .show(WindowInsetsCompat.Type.systemBars())
         renderAll()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // 页面重新可见才恢复预览渲染；后台/Gallery/Playback 覆盖时停掉，
+        // 避免 Main 的 TextureView 在不可见状态下继续 lockHardwareCanvas，
+        // 与系统 HWUI/GLThread 的 Surface 销毁竞态（真机上出现过 GLThread SIGABRT）。
+        previewController.start(app.cameraManager)
+        gridKey = null // 强制按当前可见槽位恢复 active/布局
+        renderAll()
+    }
+
+    override fun onStop() {
+        // 先让渲染器丢掉新帧，并等待正在绘制的帧结束，再注销监听，
+        // 最后才允许系统销毁 TextureView 的 Surface（避免 HWUI/GLThread 竞态崩溃）
+        panels.forEach { it.renderer.pause() }
+        previewController.stop(app.cameraManager)
+        super.onStop()
     }
 
     override fun onResume() {

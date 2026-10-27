@@ -10,11 +10,13 @@ import android.os.Bundle
 import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import com.wheeltech.blindcam.recorder.MediaSaver
+import com.wheeltech.blindcam.util.CoordinateConverter
 import com.wheeltech.blindcam.util.Logger
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.max
 
 /**
  * 总录像 GPS 轨迹记录器：
@@ -40,6 +42,12 @@ class GpsTracker(
     private var cacheFile: File? = null
     private var videoDirUri: String = ""
     private var pointCount = 0
+
+    /** 上一个被采纳的点：用于剔除网络定位/漂移造成的数公里跳点 */
+    private var lastAccepted: Location? = null
+    private var lastAcceptedElapsed = 0L
+    private var lastGpsElapsed = 0L
+    private var startWallMs = 0L
 
     @Volatile
     var isRecording = false
@@ -81,10 +89,20 @@ class GpsTracker(
             cacheFile = cache
             this.videoDirUri = videoDirUri
             pointCount = 0
+            lastAccepted = null
+            lastAcceptedElapsed = 0L
+            lastGpsElapsed = 0L
+            startWallMs = System.currentTimeMillis()
 
+            // GPS 优先；同时保留网络定位作为室内/地库无 GPS 时的兜底。
+            // 网络点只在“最近 15 秒没有 GPS 点”时采纳，避免两种坐标源来回跳。
             val providers = buildList {
-                if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) add(LocationManager.GPS_PROVIDER)
-                if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) add(LocationManager.NETWORK_PROVIDER)
+                if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                    add(LocationManager.GPS_PROVIDER)
+                }
+                if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                    add(LocationManager.NETWORK_PROVIDER)
+                }
             }
             if (providers.isEmpty()) {
                 Logger.w(TAG, "没有可用定位源（GPS/网络均关闭），跳过")
@@ -95,11 +113,6 @@ class GpsTracker(
             providers.forEach { p ->
                 lm.requestLocationUpdates(p, MIN_INTERVAL_MS, MIN_DISTANCE_M, listener)
             }
-            // 立即尝试最后已知位置，缩短首点等待
-            providers.firstNotNullOfOrNull { p ->
-                runCatching { lm.getLastKnownLocation(p) }.getOrNull()
-            }?.let { appendPoint(it) }
-
             locationManager = lm
             isRecording = true
             Logger.i(TAG, "GPS 轨迹开始记录 -> ${cache.name} providers=$providers")
@@ -113,24 +126,68 @@ class GpsTracker(
     private fun appendPoint(location: Location) {
         val f = cacheFile ?: return
         try {
+            val provider = location.provider.orEmpty()
+            val isGps = provider.equals(LocationManager.GPS_PROVIDER, ignoreCase = true)
+            val nowElapsed = SystemClock.elapsedRealtime()
+            if (isGps) lastGpsElapsed = nowElapsed
+            // 最近 15 秒有 GPS 时忽略网络点（网络定位在车上经常漂移几公里）
+            if (!isGps && lastGpsElapsed > 0 && nowElapsed - lastGpsElapsed < 15_000) return
+
+            // 精度过滤：GPS 正常 <20m；网络点放宽到 50m，>80m 的漂移直接丢弃
+            val maxAcc = if (isGps) 80f else 50f
+            if (!location.hasAccuracy() || location.accuracy > maxAcc) {
+                Logger.i(TAG, "skip low accuracy=${location.accuracy} provider=$provider")
+                return
+            }
+            if (location.latitude == 0.0 && location.longitude == 0.0) return
+
+            val prev = lastAccepted
+            if (prev != null && prev.provider == provider) {
+                val dtSec = max(1L, (nowElapsed - lastAcceptedElapsed) / 1000L)
+                val dist = CoordinateConverter.distanceMeters(
+                    prev.latitude, prev.longitude,
+                    location.latitude, location.longitude
+                )
+                // 允许的最大位移 = 速度推算 + 两次精度 + 固定余量。
+                val speed = max(prev.speed, location.speed).coerceAtLeast(0f)
+                val maxJump = max(120.0, speed * dtSec + prev.accuracy + location.accuracy + 80.0)
+                if (dist > maxJump) {
+                    Logger.i(
+                        TAG,
+                        "skip GPS jump dist=${dist.toInt()}m max=${maxJump.toInt()}m " +
+                            "acc=${location.accuracy} provider=$provider"
+                    )
+                    return
+                }
+            }
+            // 切换 provider（GPS↔网络）时以新 provider 的第一个点为基线，
+            // 不做跨源跳点比较；回看时会优先只取 GPS 点。
+            if (prev != null && prev.provider != provider) {
+                Logger.i(TAG, "GPS provider switch ${prev.provider} -> $provider, reset baseline")
+            }
+
             val now = System.currentTimeMillis()
-            val iso = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(now))
+            // 用回调时刻而不是 location.time：网络/缓存定位时刻可能早于录像起点，
+            // 会让回看轨迹点落在时间轴范围外。回调时刻与录像时间轴严格对齐。
+            val t = max(now, startWallMs)
+            val iso = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(t))
             val line = buildString {
-                append(now).append(',')
+                append(t).append(',')
                 append(iso).append(',')
                 append("%.7f".format(Locale.US, location.latitude)).append(',')
                 append("%.7f".format(Locale.US, location.longitude)).append(',')
-                append(if (location.hasAccuracy()) "%.1f".format(Locale.US, location.accuracy) else "")
-                append(',')
+                append("%.1f".format(Locale.US, location.accuracy)).append(',')
                 append(if (location.hasSpeed()) "%.2f".format(Locale.US, location.speed) else "")
                 append(',')
                 append(if (location.hasBearing()) "%.1f".format(Locale.US, location.bearing) else "")
                 append(',')
-                append(location.provider ?: "")
+                append(provider)
                 append('\n')
             }
             f.appendText(line, Charsets.UTF_8)
             pointCount++
+            lastAccepted = location
+            lastAcceptedElapsed = nowElapsed
             if (pointCount % 10 == 0) {
                 Logger.i(TAG, "GPS 点数=$pointCount last=${location.latitude},${location.longitude}")
             }
@@ -166,3 +223,4 @@ class GpsTracker(
         }
     }
 }
+

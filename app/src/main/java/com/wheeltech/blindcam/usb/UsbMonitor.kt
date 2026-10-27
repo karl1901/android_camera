@@ -57,7 +57,10 @@ class UsbMonitor(private val context: Context) {
     /** 热插拔事件 */
     sealed interface UsbEvent {
         data class Attached(val device: UsbDeviceInfo) : UsbEvent
-        data class Detached(val deviceId: Int) : UsbEvent
+        data class Detached(
+            val deviceId: Int,
+            val device: UsbDeviceInfo? = null
+        ) : UsbEvent
     }
 
     private val usbManager: UsbManager? =
@@ -97,7 +100,7 @@ class UsbMonitor(private val context: Context) {
                     device?.let { serialCache.remove(it.deviceId) }
                     refresh()
                     device?.let { d ->
-                        _events.tryEmit(UsbEvent.Detached(d.deviceId))
+                        _events.tryEmit(UsbEvent.Detached(d.deviceId, toInfo(d)))
                     }
                 }
                 ACTION_USB_PERMISSION -> {
@@ -116,10 +119,23 @@ class UsbMonitor(private val context: Context) {
                     if (device != null) {
                         dispatchPermissionResult(device.deviceId, toInfo(device), granted)
                     } else {
-                        // 系统未回传设备对象（直接拒绝）：用当前列表里仍未授权的设备兜底
-                        val fallback = _devices.value.firstOrNull { !it.hasPermission }
+                        // 少数魔改 ROM 的授权结果不带 EXTRA_DEVICE。CameraSupervisor 的
+                        // 授权请求是串行的（同一时刻最多一个待回调），因此优先用“当前
+                        // 正在等待回调的 deviceId”兜底；不能随便取第一个未授权设备，
+                        // 否则多摄像头时会失败错的对象，表现为“第二个摄像头授权后无画面”。
+                        val pendingId = permissionCallbacks.keys.firstOrNull()
+                        val fallback = _devices.value.firstOrNull { it.deviceId == pendingId }
+                            ?: _devices.value.firstOrNull { !it.hasPermission }
                         if (fallback != null) {
-                            dispatchPermissionResult(fallback.deviceId, fallback, false)
+                            // 以系统实际的 hasPermission 为准，避免把“已拒绝”误报为成功
+                            val actually = granted &&
+                                (usbManager?.hasPermission(fallback.rawDevice) == true)
+                            Logger.w(
+                                TAG,
+                                "permission intent without EXTRA_DEVICE, fallback to " +
+                                    "deviceId=${fallback.deviceId} granted=$granted actual=$actually"
+                            )
+                            dispatchPermissionResult(fallback.deviceId, fallback, actually)
                         }
                     }
                 }

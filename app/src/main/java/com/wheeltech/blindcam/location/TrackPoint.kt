@@ -10,5 +10,7 @@ data class TrackPoint(
     val lon: Double,
     val accuracy: Float,
     val speed: Float,
-    val bearing: Float
+    val bearing: Float,
+    /** gps / network / passive；空=旧文件 */
+    val provider: String = ""
 )

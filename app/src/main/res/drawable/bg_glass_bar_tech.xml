@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 科技蓝主题顶/底栏：深蓝玻璃 + 青色细描边 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#CC06182B" />
+    <stroke
+        android:width="1dp"
+        android:color="#3300E5FF" />
+</shape>

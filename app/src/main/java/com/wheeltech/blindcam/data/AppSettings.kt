@@ -11,6 +11,8 @@ data class AppSettings(
     val focusSlot: Int = 0,
     /** 主题模式（默认跟随系统） */
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    /** 车机/手机开机后是否自动启动本应用（用户可在设置页关闭） */
+    val bootAutoStart: Boolean = true,
     /** 拍照保存目录（SAF 目录树 Uri 字符串；空表示用应用私有默认目录） */
     val photoDirUri: String = "",
     /** 录像保存目录（SAF 目录树 Uri 字符串；空表示用应用私有默认目录） */
@@ -21,8 +23,6 @@ data class AppSettings(
     val osdName: Boolean = true,
     /** 叠加右上角：系统时间 yyyy-MM-dd HH:mm:ss */
     val osdClock: Boolean = true,
-    /** 叠加左下角：车速（当前无车速数据源，默认关闭；预留） */
-    val osdSpeed: Boolean = false,
 
     // ===== 预警 =====
     /** 预警提示音音量（0–100） */

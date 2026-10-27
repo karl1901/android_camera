@@ -20,6 +20,8 @@ data class GalleryMedia(
     val file: File?,
     /** SAF 目录文件的 content uri；私有文件该项为 null */
     val uri: Uri?,
+    /** SAF 所属目录树 Uri（用于删除同名 sidecar 元数据）；私有文件为 null */
+    val treeUri: String? = null,
     val name: String,
     /** 用于按设备分组/筛选的设备名（自定义名优先，文件名解析） */
     val device: String,
@@ -42,7 +44,7 @@ data class GalleryMedia(
     }
 
     companion object {
-        private const val UNKNOWN_DEVICE = "未命名设备"
+        private const val UNKNOWN_DEVICE = "摄像头"
         private const val ALL_DEVICE = "总录像"
 
         /**

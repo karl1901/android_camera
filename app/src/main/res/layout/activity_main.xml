@@ -8,7 +8,7 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@drawable/bg_gradient_dark"
+    android:background="?attr/appBg"
     android:orientation="vertical">
 
     <!-- ============ 顶部工具栏 ============ -->
@@ -16,7 +16,7 @@
         android:id="@+id/barTop"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="@drawable/bg_glass_bar"
+        android:background="?attr/barBg"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:paddingStart="16dp"
@@ -111,7 +111,7 @@
             android:layout_gravity="center"
             android:gravity="center"
             android:text="@string/no_device"
-            android:textColor="#CCFFFFFF"
+            android:textColor="?attr/colorOnSurface"
             android:textSize="17sp"
             android:visibility="gone" />
     </FrameLayout>
@@ -121,7 +121,7 @@
         android:id="@+id/barBottom"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="@drawable/bg_glass_bar"
+        android:background="?attr/barBg"
         android:scrollbars="none">
 
         <LinearLayout
@@ -136,3 +136,4 @@
     </HorizontalScrollView>
 
 </LinearLayout>
+

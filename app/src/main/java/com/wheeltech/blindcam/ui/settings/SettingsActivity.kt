@@ -95,6 +95,11 @@ class SettingsActivity : AppCompatActivity() {
                         }
                     }
                 )
+                c.addView(label("开机与后台"))
+                c.addView(switchRow("开机自动启动本应用", s.bootAutoStart) { checked ->
+                    viewModel.setBootAutoStart(checked)
+                    toast(if (checked) "已开启开机自启动" else "已关闭开机自启动")
+                })
             }
 
             // 2. 保存位置
@@ -119,49 +124,73 @@ class SettingsActivity : AppCompatActivity() {
                 }
             }
 
-            // 3. 单路设备
+            // 3. 单路设备（标签页切换，避免多设备时设置模块重复堆叠）
             val live = viewModel.slots.value.filter { it.state != CameraSupervisor.SlotState.EMPTY }
             card(container, "单路设备") { c ->
                 if (live.isEmpty()) {
                     c.addView(label("暂无已接入摄像头，接入后可在此设置名称、镜像、旋转、降噪与预警"))
                 } else {
+                    val tabRow = LinearLayout(this@SettingsActivity).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        setPadding(0, dp(2), 0, dp(6))
+                    }
+                    val tabs = ArrayList<TextView>()
+                    val detail = LinearLayout(this@SettingsActivity).apply { orientation = LinearLayout.VERTICAL }
+                    fun select(slot: Int) {
+                        tabs.forEach { tv ->
+                            val on = tv.tag as Int == slot
+                            tv.background = if (on) {
+                                themeDrawable(com.wheeltech.blindcam.R.attr.pillSelectedBg)
+                                    ?: ContextCompat.getDrawable(
+                                        this@SettingsActivity,
+                                        com.wheeltech.blindcam.R.drawable.bg_pill_gradient
+                                    )
+                            } else {
+                                themeDrawable(com.wheeltech.blindcam.R.attr.pillBg)
+                                    ?: ContextCompat.getDrawable(
+                                        this@SettingsActivity,
+                                        com.wheeltech.blindcam.R.drawable.bg_pill
+                                    )
+                            }
+                            tv.setTextColor(
+                                if (on) Color.WHITE
+                                else themeColor(com.google.android.material.R.attr.colorOnSurface)
+                            )
+                        }
+                        detail.removeAllViews()
+                        live.firstOrNull { it.slot == slot }?.let { rt ->
+                            renderDeviceDetail(detail, rt)
+                        }
+                    }
                     live.forEach { rt ->
                         val name = rt.config?.name?.takeIf { it.isNotBlank() }
                             ?: rt.device?.productName?.takeIf { it.isNotBlank() }
                             ?: "摄像头 ${rt.slot + 1}"
-                        c.addView(sectionTitle("画面 ${rt.slot + 1} · $name"))
-                        // 名称
-                        c.addView(label("自定义名称"))
-                        c.addView(nameEdit(rt.config?.name.orEmpty()) { txt ->
-                            viewModel.rename(rt.slot, txt)
-                        })
-                        // 镜像
-                        c.addView(switchRow("镜像翻转", rt.config?.mirror == true) {
-                            viewModel.setMirror(rt.slot, it)
-                        })
-                        // 旋转
-                        c.addView(label("旋转角度（当前 ${rt.config?.rotation ?: 0}°）"))
-                        c.addView(
-                            segments(listOf("0°", "90°", "180°", "270°"),
-                                ((rt.config?.rotation ?: 0) / 90).coerceIn(0, 3)) {
-                                repeat(it - (((rt.config?.rotation ?: 0) / 90).coerceIn(0, 3))) {
-                                    viewModel.rotate(rt.slot)
-                                }
-                            }
-                        )
-                        // 降噪
-                        c.addView(label("实时降噪（按该画框分辨率/帧率）"))
-                        c.addView(
-                            segments(listOf("关闭", "弱", "中", "强"),
-                                (rt.config?.denoise ?: 0).coerceIn(0, 3)) {
-                                viewModel.setDenoise(rt.slot, it)
-                            }
-                        )
-                        // 预警
-                        c.addView(switchRow("开启盲区预警", rt.config?.warn == true) {
-                            viewModel.setWarn(rt.slot, it)
-                        })
+                        val tab = TextView(this@SettingsActivity).apply {
+                            text = name
+                            tag = rt.slot
+                            textSize = 13f
+                            gravity = Gravity.CENTER
+                            minWidth = dp(90)
+                            setPadding(dp(18), dp(9), dp(18), dp(9))
+                            isClickable = true
+                            setOnClickListener { select(rt.slot) }
+                        }
+                        val lp = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT
+                        ).apply { marginEnd = dp(8) }
+                        tabRow.addView(tab, lp)
+                        tabs.add(tab)
                     }
+                    c.addView(
+                        android.widget.HorizontalScrollView(this@SettingsActivity).apply {
+                            isHorizontalScrollBarEnabled = false
+                            addView(tabRow)
+                        }
+                    )
+                    c.addView(detail)
+                    select(live.first().slot)
                 }
             }
 
@@ -232,7 +261,7 @@ class SettingsActivity : AppCompatActivity() {
                 }
                 val value = TextView(this@SettingsActivity).apply {
                     text = "${s.warnVolume}"; setPadding(dp(12), 0, 0, 0)
-                    setTextColor(0xFFB9B3CC.toInt())
+                    setTextColor(themeColor(com.wheeltech.blindcam.R.attr.onSurfaceDim))
                 }
                 seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                     override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -244,6 +273,11 @@ class SettingsActivity : AppCompatActivity() {
                 })
                 row.addView(seek); row.addView(value)
                 c.addView(row)
+                c.addView(label("预警使用警报流合成蜂鸣，不依赖系统通知铃声；可点下方按钮试听"))
+                c.addView(pillButton("测试蜂鸣", true) {
+                    app.warningManager.testBeep()
+                    toast("已触发测试蜂鸣（1 秒）")
+                })
             }
 
             // 9. 日志与排查
@@ -256,6 +290,36 @@ class SettingsActivity : AppCompatActivity() {
         }
     }
 
+    /** 单设备详情（标签页切换时复用，避免每个设备重复堆叠整块设置） */
+    private fun renderDeviceDetail(c: LinearLayout, rt: CameraSupervisor.SlotRuntime) {
+        c.addView(sectionTitle("画面 ${rt.slot + 1} 设置"))
+        c.addView(label("自定义名称（与设备唯一 ID 绑定，重启保持）"))
+        c.addView(nameEdit(rt.config?.name.orEmpty()) { txt ->
+            viewModel.rename(rt.slot, txt)
+        })
+        c.addView(switchRow("镜像翻转", rt.config?.mirror == true) {
+            viewModel.setMirror(rt.slot, it)
+        })
+        c.addView(label("旋转角度（当前 ${rt.config?.rotation ?: 0}°）"))
+        c.addView(
+            segments(listOf("0°", "90°", "180°", "270°"),
+                ((rt.config?.rotation ?: 0) / 90).coerceIn(0, 3)) { i ->
+                viewModel.setRotation(rt.slot, i * 90)
+            }
+        )
+        c.addView(label("实时降噪 / 夜视增强（按该画框分辨率与帧率独立处理）"))
+        c.addView(label("弱/中/强逐级增强暗部与去噪；强档为多帧时域累积，运动物体不拖影"))
+        c.addView(
+            segments(listOf("关闭", "弱", "中", "强"),
+                (rt.config?.denoise ?: 0).coerceIn(0, 3)) {
+                viewModel.setDenoise(rt.slot, it)
+            }
+        )
+        c.addView(switchRow("开启盲区预警", rt.config?.warn == true) {
+            viewModel.setWarn(rt.slot, it)
+        })
+    }
+
     // ------------------------------------------------------------------
     // 构建辅助
     // ------------------------------------------------------------------
@@ -263,7 +327,8 @@ class SettingsActivity : AppCompatActivity() {
     private fun card(container: LinearLayout, title: String, body: (LinearLayout) -> Unit) {
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = ContextCompat.getDrawable(this@SettingsActivity, com.wheeltech.blindcam.R.drawable.bg_glass_card)
+            background = themeDrawable(com.wheeltech.blindcam.R.attr.cardBg)
+                ?: ContextCompat.getDrawable(this@SettingsActivity, com.wheeltech.blindcam.R.drawable.bg_glass_card)
             setPadding(dp(18), dp(16), dp(18), dp(16))
         }
         val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
@@ -272,7 +337,7 @@ class SettingsActivity : AppCompatActivity() {
         }
         card.addView(TextView(this).apply {
             text = title
-            setTextColor(0xFFFFFFFF.toInt())
+            setTextColor(themeColor(com.google.android.material.R.attr.colorOnSurface))
             textSize = 17f
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             setPadding(0, 0, 0, dp(8))
@@ -285,21 +350,21 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun sectionTitle(text: String) = TextView(this).apply {
         this.text = text
-        setTextColor(0xFFE8B7D5.toInt())
+        setTextColor(themeColor(com.wheeltech.blindcam.R.attr.accentColor))
         textSize = 14f
         setPadding(0, dp(12), 0, dp(2))
     }
 
     private fun label(text: String) = TextView(this).apply {
         this.text = text
-        setTextColor(0xFFB9B3CC.toInt())
+        setTextColor(themeColor(com.wheeltech.blindcam.R.attr.onSurfaceDim))
         textSize = 13f
         setPadding(0, dp(10), 0, dp(4))
     }
 
     private fun linkRow(text: String, onClick: () -> Unit) = TextView(this).apply {
         this.text = text
-        setTextColor(0xFFB9B3CC.toInt())
+        setTextColor(themeColor(com.wheeltech.blindcam.R.attr.onSurfaceDim))
         textSize = 12f
         gravity = Gravity.END
         setPadding(0, dp(2), dp(4), dp(6))
@@ -309,10 +374,11 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun pathRow(path: String, onClick: () -> Unit) = TextView(this).apply {
         text = "📁  $path\n点击可更改"
-        setTextColor(0xFFECEAF2.toInt())
+        setTextColor(themeColor(com.google.android.material.R.attr.colorOnSurface))
         textSize = 12f
         typeface = Typeface.MONOSPACE
-        background = ContextCompat.getDrawable(this@SettingsActivity, com.wheeltech.blindcam.R.drawable.bg_pill)
+        background = themeDrawable(com.wheeltech.blindcam.R.attr.pillBg)
+            ?: ContextCompat.getDrawable(this@SettingsActivity, com.wheeltech.blindcam.R.drawable.bg_pill)
         setPadding(dp(14), dp(10), dp(14), dp(10))
         setLineSpacing(dp(2).toFloat(), 1f)
         isClickable = true
@@ -321,10 +387,12 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun nameEdit(current: String, onDone: (String) -> Unit) = EditText(this).apply {
         setText(current)
-        setTextColor(Color.WHITE)
+        setTextColor(themeColor(com.google.android.material.R.attr.colorOnSurface))
+        setHintTextColor(themeColor(com.wheeltech.blindcam.R.attr.onSurfaceDim))
         textSize = 14f
         setSingleLine(true)
-        background = ContextCompat.getDrawable(this@SettingsActivity, com.wheeltech.blindcam.R.drawable.bg_pill)
+        background = themeDrawable(com.wheeltech.blindcam.R.attr.pillBg)
+            ?: ContextCompat.getDrawable(this@SettingsActivity, com.wheeltech.blindcam.R.drawable.bg_pill)
         setPadding(dp(14), dp(10), dp(14), dp(10))
         setOnFocusChangeListener { _, hasFocus ->
             if (!hasFocus) onDone(text.toString().trim())
@@ -340,7 +408,7 @@ class SettingsActivity : AppCompatActivity() {
         }
         val tv = TextView(this).apply {
             text = labelText
-            setTextColor(0xFFECEAF2.toInt())
+            setTextColor(themeColor(com.google.android.material.R.attr.colorOnSurface))
             textSize = 14f
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
@@ -370,9 +438,23 @@ class SettingsActivity : AppCompatActivity() {
         val views = ArrayList<TextView>()
         fun refresh(sel: Int) {
             views.forEachIndexed { i, tv ->
-                tv.setBackgroundResource(if (i == sel) com.wheeltech.blindcam.R.drawable.bg_pill_gradient
-                    else com.wheeltech.blindcam.R.drawable.bg_pill)
-                tv.setTextColor(if (i == sel) Color.WHITE else 0xFFB9B3CC.toInt())
+                tv.background = if (i == sel) {
+                    themeDrawable(com.wheeltech.blindcam.R.attr.pillSelectedBg)
+                        ?: ContextCompat.getDrawable(
+                            this@SettingsActivity,
+                            com.wheeltech.blindcam.R.drawable.bg_pill_gradient
+                        )
+                } else {
+                    themeDrawable(com.wheeltech.blindcam.R.attr.pillBg)
+                        ?: ContextCompat.getDrawable(
+                            this@SettingsActivity,
+                            com.wheeltech.blindcam.R.drawable.bg_pill
+                        )
+                }
+                tv.setTextColor(
+                    if (i == sel) Color.WHITE
+                    else themeColor(com.google.android.material.R.attr.colorOnSurface)
+                )
             }
         }
         labels.forEachIndexed { i, lab ->
@@ -399,13 +481,39 @@ class SettingsActivity : AppCompatActivity() {
         setTextColor(Color.WHITE)
         textSize = 14f
         setPadding(dp(16), dp(12), dp(16), dp(12))
-        setBackgroundResource(if (gradient) com.wheeltech.blindcam.R.drawable.bg_pill_gradient
-            else com.wheeltech.blindcam.R.drawable.bg_pill)
+        setBackground(
+            if (gradient) {
+                themeDrawable(com.wheeltech.blindcam.R.attr.pillSelectedBg)
+                    ?: ContextCompat.getDrawable(
+                        this@SettingsActivity,
+                        com.wheeltech.blindcam.R.drawable.bg_pill_gradient
+                    )
+            } else {
+                themeDrawable(com.wheeltech.blindcam.R.attr.pillBg)
+                    ?: ContextCompat.getDrawable(
+                        this@SettingsActivity,
+                        com.wheeltech.blindcam.R.drawable.bg_pill
+                    )
+            }
+        )
         isClickable = true
         setOnClickListener { onClick() }
     }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    /** 解析当前主题的颜色属性（浅色/深色/科技蓝自适应） */
+    private fun themeColor(attr: Int): Int {
+        val tv = android.util.TypedValue()
+        theme.resolveAttribute(attr, tv, true)
+        return tv.data
+    }
+
+    private fun themeDrawable(attr: Int): android.graphics.drawable.Drawable? {
+        val tv = android.util.TypedValue()
+        if (!theme.resolveAttribute(attr, tv, true) || tv.resourceId == 0) return null
+        return ContextCompat.getDrawable(this, tv.resourceId)
+    }
 
     private fun hasLocationPermission(): Boolean =
         ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
@@ -461,3 +569,4 @@ class SettingsActivity : AppCompatActivity() {
         Snackbar.make(binding.root, m, Snackbar.LENGTH_SHORT).show()
     }
 }
+

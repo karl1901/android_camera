@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 极淡星光颗粒：160×160 透明贴图平铺，避免大面积纯渐变显得死板 -->
+<bitmap xmlns:android="http://schemas.android.com/apk/res/android"
+    android:src="@drawable/starfield"
+    android:tileMode="repeat"
+    android:gravity="top|left" />

@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 顶部/底部栏：半透明深色玻璃，底部细亮边 -->
+<!-- 顶部/底部栏：半透明深紫玻璃，底部细亮边；在浅色主题下也保持深色以托住白色图标 -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
-    <solid android:color="#5C14102A" />
+    <solid android:color="#CC1A1330" />
     <stroke
         android:width="1dp"
-        android:color="#26FFFFFF" />
+        android:color="#33FFFFFF" />
 </shape>

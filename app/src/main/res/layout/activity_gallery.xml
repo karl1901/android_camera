@@ -10,7 +10,7 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@drawable/bg_gradient_dark"
+    android:background="?attr/appBg"
     android:orientation="vertical">
 
     <!-- ============ 普通顶栏 ============ -->
@@ -18,7 +18,7 @@
         android:id="@+id/barTopNormal"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="@drawable/bg_glass_bar"
+        android:background="?attr/barBg"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:paddingStart="10dp"
@@ -73,7 +73,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginStart="10dp"
-            android:background="@drawable/bg_pill_gradient"
+            android:background="?attr/pillSelectedBg"
             android:paddingStart="16dp"
             android:paddingTop="9dp"
             android:paddingEnd="16dp"
@@ -88,7 +88,7 @@
         android:id="@+id/barTopSelect"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="@drawable/bg_glass_bar"
+        android:background="?attr/barBg"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:paddingStart="14dp"
@@ -204,7 +204,7 @@
             android:layout_gravity="center"
             android:gravity="center"
             android:text="@string/gallery_empty"
-            android:textColor="#99FFFFFF"
+            android:textColor="?attr/onSurfaceDim"
             android:textSize="15sp"
             android:visibility="gone" />
     </FrameLayout>
@@ -214,7 +214,7 @@
         android:id="@+id/barBottomSelect"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="@drawable/bg_glass_bar"
+        android:background="?attr/barBg"
         android:gravity="center"
         android:orientation="horizontal"
         android:paddingStart="16dp"
@@ -241,3 +241,4 @@
     </LinearLayout>
 
 </LinearLayout>
+

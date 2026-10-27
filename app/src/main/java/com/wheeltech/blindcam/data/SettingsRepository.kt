@@ -28,12 +28,12 @@ class SettingsRepository(private val context: Context) {
         val LAYOUT_MODE = intPreferencesKey("layout_mode")
         val FOCUS_SLOT = intPreferencesKey("focus_slot")
         val THEME_MODE = intPreferencesKey("theme_mode")
+        val BOOT_AUTO_START = booleanPreferencesKey("boot_auto_start")
         val PHOTO_DIR_URI = stringPreferencesKey("photo_dir_uri")
         val VIDEO_DIR_URI = stringPreferencesKey("video_dir_uri")
         val DEVICE_CONFIGS = stringPreferencesKey("device_configs")
         val OSD_NAME = booleanPreferencesKey("osd_name")
         val OSD_CLOCK = booleanPreferencesKey("osd_clock")
-        val OSD_SPEED = booleanPreferencesKey("osd_speed")
         val WARN_VOLUME = intPreferencesKey("warn_volume")
         val SINGLE_BITRATE_QUALITY = intPreferencesKey("single_bitrate_quality")
         val COMPOSITE_BITRATE_QUALITY = intPreferencesKey("composite_bitrate_quality")
@@ -53,11 +53,11 @@ class SettingsRepository(private val context: Context) {
             themeMode = p[Keys.THEME_MODE]?.let {
                 runCatching { AppSettings.ThemeMode.entries[it] }.getOrNull()
             } ?: defaults.themeMode,
+            bootAutoStart = p[Keys.BOOT_AUTO_START] ?: defaults.bootAutoStart,
             photoDirUri = p[Keys.PHOTO_DIR_URI] ?: defaults.photoDirUri,
             videoDirUri = p[Keys.VIDEO_DIR_URI] ?: defaults.videoDirUri,
             osdName = p[Keys.OSD_NAME] ?: defaults.osdName,
             osdClock = p[Keys.OSD_CLOCK] ?: defaults.osdClock,
-            osdSpeed = p[Keys.OSD_SPEED] ?: defaults.osdSpeed,
             warnVolume = (p[Keys.WARN_VOLUME] ?: defaults.warnVolume).coerceIn(0, 100),
             singleBitrateQuality = (p[Keys.SINGLE_BITRATE_QUALITY]
                 ?: defaults.singleBitrateQuality).coerceIn(0, 4),
@@ -95,6 +95,8 @@ class SettingsRepository(private val context: Context) {
     suspend fun setThemeMode(mode: AppSettings.ThemeMode) =
         edit { it[Keys.THEME_MODE] = mode.ordinal }
 
+    suspend fun setBootAutoStart(v: Boolean) = edit { it[Keys.BOOT_AUTO_START] = v }
+
     suspend fun setPhotoDirUri(uri: String) =
         edit { it[Keys.PHOTO_DIR_URI] = uri }
 
@@ -103,7 +105,6 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setOsdName(v: Boolean) = edit { it[Keys.OSD_NAME] = v }
     suspend fun setOsdClock(v: Boolean) = edit { it[Keys.OSD_CLOCK] = v }
-    suspend fun setOsdSpeed(v: Boolean) = edit { it[Keys.OSD_SPEED] = v }
     suspend fun setWarnVolume(v: Int) = edit { it[Keys.WARN_VOLUME] = v.coerceIn(0, 100) }
     suspend fun setSingleBitrateQuality(v: Int) =
         edit { it[Keys.SINGLE_BITRATE_QUALITY] = v.coerceIn(0, 4) }

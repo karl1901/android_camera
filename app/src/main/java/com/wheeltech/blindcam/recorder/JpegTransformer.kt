@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Matrix
 import android.util.Log
+import com.wheeltech.blindcam.imaging.FrameDenoiser
 import java.io.ByteArrayOutputStream
 
 /**
@@ -25,33 +26,58 @@ object JpegTransformer {
         return rot == 90 || rot == 270
     }
 
-    fun transform(jpeg: ByteArray, mirrorH: Boolean, rotationDeg: Int): ByteArray =
-        transform(jpeg, mirrorH, rotationDeg, null)
-
-    /** 拍照路径：输出 JPEG 字节。无变换时原样返回设备 JPEG（最高保真）。 */
     fun transform(
         jpeg: ByteArray,
         mirrorH: Boolean,
         rotationDeg: Int,
-        overlay: OsdRenderer.Overlay?
+        denoiseLevel: Int = 0
+    ): ByteArray = transform(jpeg, mirrorH, rotationDeg, null, denoiseLevel)
+
+    /**
+     * 拍照路径：输出 JPEG 字节。
+     * 无镜像/旋转/OSD 且降噪关闭时原样返回设备 JPEG（最高保真、零重编码）；
+     * 否则解码 → 降噪 → 几何 → OSD → JPEG 95 重编码（与预览所见一致）。
+     */
+    fun transform(
+        jpeg: ByteArray,
+        mirrorH: Boolean,
+        rotationDeg: Int,
+        overlay: OsdRenderer.Overlay?,
+        denoiseLevel: Int = 0
     ): ByteArray {
         val rot = ((rotationDeg % 360) + 360) % 360
         val needGeo = mirrorH || rot != 0
         val needOsd = overlay?.any == true
-        if (!needGeo && !needOsd) {
+        val needDenoise = denoiseLevel > 0
+        if (!needGeo && !needOsd && !needDenoise) {
             logJpegSize(jpeg, "photo(raw)")
             return jpeg
         }
         val out = process(jpeg, mirrorH, rot, overlay) ?: return jpeg
-        return try {
+        var denoiser: FrameDenoiser? = null
+        try {
+            val source = if (needDenoise) {
+                runCatching {
+                    val dn = FrameDenoiser(denoiseLevel.coerceIn(1, 3), budgetMs = 500)
+                    denoiser = dn
+                    dn.process(out)
+                }.getOrElse {
+                    // 4K 光栅内存不足等异常：退回未降噪图，绝不因拍照崩溃
+                    android.util.Log.w(TAG, "photo denoise failed, fallback: ${it.message}")
+                    out
+                }
+            } else out
             val bos = ByteArrayOutputStream(jpeg.size.coerceAtLeast(1024))
-            out.compress(Bitmap.CompressFormat.JPEG, 95, bos)
-            Log.i(TAG, "photo(re-encode) ${out.width}x${out.height} bytes=${bos.size()}")
-            bos.toByteArray()
+            source.compress(Bitmap.CompressFormat.JPEG, 95, bos)
+            Log.i(TAG, "photo(re-encode) ${source.width}x${source.height} " +
+                "dn=$denoiseLevel bytes=${bos.size()}")
+            return bos.toByteArray()
         } catch (t: Throwable) {
             Log.w(TAG, "re-encode failed: ${t.message}")
-            jpeg
+            return jpeg
         } finally {
+            denoiser?.release()
+            // denoiser 的输出位图由 release 统一回收；只回收原始处理图
             runCatching { out.recycle() }
         }
     }

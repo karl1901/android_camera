@@ -11,9 +11,12 @@ import android.view.Surface
 import android.view.TextureView
 import android.view.View
 import android.view.WindowManager
+import android.view.GestureDetector
+import android.view.MotionEvent
 import android.widget.SeekBar
 import androidx.appcompat.app.AppCompatActivity
 import com.wheeltech.blindcam.R
+import com.wheeltech.blindcam.UvcApp
 import com.wheeltech.blindcam.databinding.ActivityVideoPlayerBinding
 import com.wheeltech.blindcam.util.Logger
 import java.util.Locale
@@ -38,14 +41,39 @@ class VideoPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
     private var seekToMs = 0
     private var isSeeking = false
 
+    /** 暂停进入全屏时：先 start 一帧再 pause，保证 MediaPlayer 把首帧渲染到 Surface */
+    private var pauseAfterFirstFrame = false
+
     // 裁剪（回看全屏跟随某一路）：视频像素坐标；cropW<=0 表示整段
     private var cropX = 0
     private var cropY = 0
     private var cropW = 0
     private var cropH = 0
 
-    /** 控件自动收起：进入显示 1 秒；播放中无操作 2 秒收起；暂停时常驻 */
+    /** 控件自动收起：进入显示 1 秒；点击画面重新显示，无操作 2 秒后收起（暂停时保持可见） */
     private val hideRunnable = Runnable { if (isPlayingNow()) hideControls() }
+
+    /** 双击播放/暂停；单击切换工具栏显隐（与回看页一致的通用交互） */
+    private val gestureDetector by lazy {
+        GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                togglePlay()
+                return true
+            }
+
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                val visible = binding.barTop.visibility == View.VISIBLE ||
+                    binding.barBottom.visibility == View.VISIBLE
+                if (visible) {
+                    // 用户主动点击非工具栏区域：即使暂停也隐藏
+                    hideControls(force = true)
+                } else {
+                    showControlsThenSchedule()
+                }
+                return true
+            }
+        })
+    }
     private val progressRunnable = object : Runnable {
         override fun run() {
             val p = player ?: return
@@ -61,6 +89,8 @@ class VideoPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
     private fun isPlayingNow(): Boolean = runCatching { player?.isPlaying == true }.getOrDefault(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val appTheme = application as UvcApp
+        setTheme(appTheme.themeResId(appTheme.currentThemeMode))
         super.onCreate(savedInstanceState)
         window.setFlags(
             WindowManager.LayoutParams.FLAG_FULLSCREEN,
@@ -74,6 +104,8 @@ class VideoPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
         cropY = intent.getIntExtra(EXTRA_CROP_Y, 0)
         cropW = intent.getIntExtra(EXTRA_CROP_W, 0)
         cropH = intent.getIntExtra(EXTRA_CROP_H, 0)
+        seekToMs = intent.getIntExtra(EXTRA_START_MS, 0)
+        startWhenReady = intent.getBooleanExtra(EXTRA_AUTOPLAY, true)
         binding.btnBack.setOnClickListener { finish() }
         binding.videoView.surfaceTextureListener = this
 
@@ -82,8 +114,11 @@ class VideoPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
         binding.btnRewind.setOnClickListener { seekBy(-10_000) }
         binding.btnForward.setOnClickListener { seekBy(10_000) }
 
-        // 点击画面任意处：显示控件并重置自动收起计时
-        binding.videoView.setOnClickListener { showControlsThenSchedule() }
+        // 单击画面：显示/隐藏控件；双击：播放/暂停
+        binding.videoView.setOnTouchListener { _, event ->
+            gestureDetector.onTouchEvent(event)
+            true
+        }
 
         binding.seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -91,8 +126,9 @@ class VideoPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
             }
             override fun onStartTrackingTouch(sb: SeekBar?) { isSeeking = true; uiHandler.removeCallbacks(hideRunnable) }
             override fun onStopTrackingTouch(sb: SeekBar?) {
-                runCatching { player?.seekTo(sb?.progress ?: 0) }
                 isSeeking = false
+                val p = player
+                if (p != null && prepared) seekAndRender(p, sb?.progress ?: 0)
                 scheduleHide()
             }
         })
@@ -100,7 +136,7 @@ class VideoPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
         // 若 surface 已就绪（复用），直接初始化
         binding.videoView.surfaceTexture?.let { onSurfaceTextureAvailable(it, 0, 0) }
         showControls()
-        scheduleHide(2000)
+        scheduleHide(1000)
     }
 
     private fun buildDataSource() {
@@ -120,7 +156,20 @@ class VideoPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
                 binding.tvDuration.text = formatTime(it.duration)
                 surface?.let { s -> it.setSurface(s) }
                 if (seekToMs > 0) it.seekTo(seekToMs)
-                if (startWhenReady) it.start()
+                if (startWhenReady) {
+                    it.start()
+                } else {
+                    // 暂停进入全屏：MediaPlayer 仅 seek 不一定刷新首帧，先播一帧再暂停
+                    pauseAfterFirstFrame = true
+                    runCatching { it.start() }
+                    uiHandler.postDelayed({
+                        if (pauseAfterFirstFrame) {
+                            pauseAfterFirstFrame = false
+                            runCatching { it.pause() }
+                            updatePlayIcon()
+                        }
+                    }, 180)
+                }
                 updatePlayIcon()
                 applyVideoTransform(it.videoWidth, it.videoHeight)
                 uiHandler.post(progressRunnable)
@@ -156,10 +205,13 @@ class VideoPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
         if (viewW <= 0 || viewH <= 0) return
         val m = Matrix()
         if (cropW > 0 && cropH > 0) {
-            val sx = videoW.toFloat() / cropW
-            val sy = videoH.toFloat() / cropH
-            m.setScale(sx, sy)
-            m.postTranslate(-cropX * viewW / cropW, -cropY * viewH / cropH)
+            // 单路全屏：放大裁剪区域铺满视图，只显示该路（fit 会把相邻格一起缩进来）
+            val s = maxOf(viewW / cropW, viewH / cropH)
+            m.setScale(s * videoW / viewW, s * videoH / viewH)
+            m.postTranslate(
+                (viewW - cropW * s) / 2f - cropX * s,
+                (viewH - cropH * s) / 2f - cropY * s
+            )
         } else {
             val s = minOf(viewW / videoW, viewH / videoH)
             val scaledW = videoW * s
@@ -173,9 +225,10 @@ class VideoPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
     private fun togglePlay() {
         val p = player ?: return
         if (!prepared) return
+        pauseAfterFirstFrame = false
         if (p.isPlaying) {
             p.pause()
-            showControls()
+            showControlsThenSchedule()
         } else {
             p.start()
             binding.btnCenterPlay.visibility = View.GONE
@@ -188,10 +241,26 @@ class VideoPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
         val p = player ?: return
         if (!prepared) return
         val target = (p.currentPosition + deltaMs).coerceIn(0, p.duration)
-        p.seekTo(target)
+        seekAndRender(p, target)
+        scheduleHide()
+    }
+
+    /** 暂停状态下拖动进度：seek 后短暂 start 再 pause，强制刷新画面帧 */
+    private fun seekAndRender(p: MediaPlayer, target: Int) {
+        runCatching { p.seekTo(target) }
         binding.seekBar.progress = target
         binding.tvCurrent.text = formatTime(target)
-        scheduleHide()
+        if (!isPlayingNow()) {
+            pauseAfterFirstFrame = true
+            runCatching { p.start() }
+            uiHandler.postDelayed({
+                if (pauseAfterFirstFrame) {
+                    pauseAfterFirstFrame = false
+                    runCatching { p.pause() }
+                    updatePlayIcon()
+                }
+            }, 180)
+        }
     }
 
     private fun updatePlayIcon() {
@@ -205,8 +274,8 @@ class VideoPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
         binding.barBottom.visibility = View.VISIBLE
     }
 
-    private fun hideControls() {
-        if (!isPlayingNow()) return // 暂停时不收起，方便用户操作
+    private fun hideControls(force: Boolean = false) {
+        if (!force && !isPlayingNow()) return // 自动收起时暂停画面保留控件
         binding.barTop.visibility = View.GONE
         binding.barBottom.visibility = View.GONE
     }
@@ -234,8 +303,14 @@ class VideoPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
     // ---- TextureView.SurfaceTextureListener ----
     override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
         if (this.surface == null) this.surface = Surface(surface)
-        startWhenReady = true
-        buildDataSource()
+        if (player == null) {
+            // startWhenReady 在 onCreate 按 EXTRA_AUTOPLAY 初始化，Surface 重建时由
+            // onSurfaceTextureDestroyed 按当时是否在播放恢复
+            buildDataSource()
+        } else {
+            // Surface 重建：把现有播放器挂到新 Surface
+            runCatching { player?.setSurface(this.surface) }
+        }
     }
 
     override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
@@ -245,22 +320,36 @@ class VideoPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
     }
 
     override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
-        this.surface?.release()
+        // 必须先释放播放器并记录位置，否则新 Surface 上会继续使用已释放的旧 Surface（黑屏）
+        runCatching { seekToMs = player?.currentPosition ?: seekToMs }
+        startWhenReady = isPlayingNow()
+        runCatching { player?.setSurface(null) }
+        runCatching { player?.release() }
+        player = null
+        prepared = false
         this.surface = null
         return true
     }
 
     override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
 
-    override fun onDestroy() {
-        super.onDestroy()
-        uiHandler.removeCallbacksAndMessages(null)
-        runCatching {
-            player?.release()
+    override fun onPause() {
+        // 退到后台/锁屏时暂停，避免继续解码耗电、被系统回收
+        if (isPlayingNow()) {
+            runCatching { player?.pause() }
+            updatePlayIcon()
+            showControls()
         }
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        uiHandler.removeCallbacksAndMessages(null)
+        runCatching { player?.setSurface(null) }
+        runCatching { player?.release() }
         player = null
-        surface?.release()
         surface = null
+        super.onDestroy()
     }
 
     companion object {
@@ -272,5 +361,8 @@ class VideoPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
         const val EXTRA_CROP_Y = "extra_crop_y"
         const val EXTRA_CROP_W = "extra_crop_w"
         const val EXTRA_CROP_H = "extra_crop_h"
+        const val EXTRA_START_MS = "extra_start_ms"
+        const val EXTRA_AUTOPLAY = "extra_autoplay"
     }
 }
+

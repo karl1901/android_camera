@@ -9,9 +9,10 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:background="@drawable/bg_glass_card"
+    android:layout_margin="@dimen/ui_gallery_gap"
+    android:background="?attr/cardBg"
     android:orientation="vertical"
-    android:padding="8dp">
+    android:padding="@dimen/ui_gallery_pad">
 
     <FrameLayout
         android:layout_width="match_parent"
@@ -20,20 +21,22 @@
         <ImageView
             android:id="@+id/imgThumb"
             android:layout_width="match_parent"
-            android:layout_height="160dp"
-            android:background="#16000000"
+            android:layout_height="120dp"
+            android:layout_margin="2dp"
+            android:background="@drawable/bg_thumb_round"
+            android:clipToOutline="true"
             android:contentDescription="@string/gallery_thumb_desc"
             android:scaleType="centerCrop" />
 
         <!-- 视频中央播放角标 -->
         <ImageView
             android:id="@+id/imgPlay"
-            android:layout_width="40dp"
-            android:layout_height="40dp"
+            android:layout_width="@dimen/ui_capture_button"
+            android:layout_height="@dimen/ui_capture_button"
             android:layout_gravity="center"
             android:background="@drawable/bg_play_badge"
             android:contentDescription="@string/player_play"
-            android:padding="9dp"
+            android:padding="@dimen/ui_capture_padding"
             android:src="@drawable/ic_play"
             android:visibility="gone" />
 
@@ -50,7 +53,7 @@
             android:paddingEnd="7dp"
             android:paddingBottom="3dp"
             android:textColor="#FFFFFFFF"
-            android:textSize="11sp"
+            android:textSize="@dimen/ui_small"
             android:visibility="gone" />
 
         <!-- 多选勾选框 -->
@@ -61,7 +64,8 @@
             android:layout_gravity="top|end"
             android:layout_margin="6dp"
             android:contentDescription="@string/gallery_select_items"
-            android:src="@drawable/bg_checkbox"
+            android:padding="6dp"
+            android:scaleType="centerInside"
             android:visibility="gone" />
     </FrameLayout>
 
@@ -74,8 +78,8 @@
         android:maxLines="1"
         android:paddingStart="4dp"
         android:paddingEnd="4dp"
-        android:textColor="#FFEDE9FB"
-        android:textSize="13sp"
+        android:textColor="?attr/colorOnSurface"
+        android:textSize="@dimen/ui_gallery_name"
         android:textStyle="bold" />
 
     <TextView
@@ -87,6 +91,7 @@
         android:paddingStart="4dp"
         android:paddingEnd="4dp"
         android:paddingBottom="2dp"
-        android:textColor="#99FFFFFF"
-        android:textSize="11sp" />
+        android:textColor="?attr/onSurfaceDim"
+        android:textSize="@dimen/ui_gallery_time" />
 </LinearLayout>
+

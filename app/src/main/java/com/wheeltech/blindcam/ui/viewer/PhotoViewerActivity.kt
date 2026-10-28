@@ -5,11 +5,11 @@ import android.net.Uri
 import android.os.Bundle
 import android.view.View
 import android.view.WindowManager
-import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.wheeltech.blindcam.R
 import com.wheeltech.blindcam.UvcApp
 import com.wheeltech.blindcam.databinding.ActivityPhotoViewerBinding
+import com.wheeltech.blindcam.ui.common.ThemedActivity
 import com.wheeltech.blindcam.util.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -24,13 +24,11 @@ import java.util.Locale
  * - 单击切换顶部栏
  * - 私有目录走文件路径、SAF 目录走 content uri，均在应用内解码，无需借助任何外部 App
  */
-class PhotoViewerActivity : AppCompatActivity() {
+class PhotoViewerActivity : ThemedActivity() {
 
     private lateinit var binding: ActivityPhotoViewerBinding
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        val appTheme = application as UvcApp
-        setTheme(appTheme.themeResId(appTheme.currentThemeMode))
         super.onCreate(savedInstanceState)
         // 沉浸式全屏（黑底）
         window.setFlags(
@@ -50,6 +48,11 @@ class PhotoViewerActivity : AppCompatActivity() {
         binding.photoView.onSingleTap = { toggleBar() }
 
         loadImage()
+    }
+
+    override fun onResume() {
+        if (recreateIfThemeChanged()) return
+        super.onResume()
     }
 
     private fun toggleBar() {

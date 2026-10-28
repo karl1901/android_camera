@@ -3,20 +3,22 @@ package com.wheeltech.blindcam.ui.playback
 import android.app.DatePickerDialog
 import android.graphics.Color
 import android.graphics.Matrix
+import android.graphics.Rect
 import android.graphics.SurfaceTexture
 import android.media.MediaPlayer
-import android.os.Build
+import android.view.Surface
+import android.view.TextureView
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.GestureDetector
+import android.view.Gravity
 import android.view.MotionEvent
-import android.view.Surface
-import android.view.TextureView
 import android.view.View
 import android.view.WindowManager
-import androidx.appcompat.app.AppCompatActivity
+import android.widget.GridLayout
+import android.widget.SeekBar
 import androidx.lifecycle.lifecycleScope
 import com.wheeltech.blindcam.UvcApp
 import com.amap.api.maps.AMap
@@ -33,6 +35,9 @@ import com.wheeltech.blindcam.domain.CameraSupervisor
 import com.wheeltech.blindcam.domain.GridLayoutSpec
 import com.wheeltech.blindcam.location.TrackPoint
 import com.wheeltech.blindcam.recorder.GalleryMedia
+import com.wheeltech.blindcam.recorder.MediaPart
+import com.wheeltech.blindcam.ui.common.GlassMenuPopup
+import com.wheeltech.blindcam.ui.common.ThemedActivity
 import com.wheeltech.blindcam.ui.viewer.VideoPlayerActivity
 import com.wheeltech.blindcam.util.CoordinateConverter
 import com.wheeltech.blindcam.util.Logger
@@ -57,7 +62,7 @@ import kotlinx.coroutines.withContext
  * - 空日期：画面清黑、白字提示
  * - 下方行车轨迹地图（见 Amap 集成）
  */
-class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
+class PlaybackActivity : ThemedActivity() {
 
     private lateinit var binding: ActivityPlaybackBinding
     private val uiHandler = Handler(Looper.getMainLooper())
@@ -69,9 +74,28 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
         val startMs: Long,
         val endMs: Long,
         val durationMs: Long,
-        /** 录制时参与合成的画面名称（来自同名 .json 元数据）；旧录像为空 */
-        val cellNames: List<String> = emptyList()
-    )
+        /** 录制时参与合成的画面名称（来自元数据）；旧录像为空 */
+        val cellNames: List<String> = emptyList(),
+        /** 新架构：每个画框一个独立 MP4；旧录像为空 */
+        val parts: List<MediaPart> = emptyList(),
+        val groupKey: String? = null
+    ) {
+        /** 当前可播放源：cellIndex<0 时用旧合成文件，否则用该路独立文件 */
+        fun sourcesFor(cell: Int): List<MediaPart> {
+            if (parts.isEmpty()) {
+                return listOf(
+                    MediaPart(
+                        name = nameOfMain(),
+                        file = file,
+                        uri = uri
+                    )
+                )
+            }
+            return if (cell in parts.indices) listOf(parts[cell]) else parts
+        }
+
+        private fun nameOfMain(): String = file?.name ?: uri?.lastPathSegment ?: "ALL"
+    }
 
     /** 后台扫描结果（扫描/探测时长/读 GPS 都不允许占用主线程） */
     private class LoadResult(
@@ -82,18 +106,24 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
 
     private var segments: List<SegInfo> = emptyList()
     private var curSegIndex = -1
-    private var player: MediaPlayer? = null
     private var prepared = false
-    private var surface: Surface? = null
+    private val videoViews = ArrayList<TextureView>()
+    private var readyCount = 0
+    private var completedCount = 0
+    private val players = LinkedHashMap<Int, MediaPlayer>()
+    private val playerSurfaces = LinkedHashMap<Int, Surface>()
+    private var pendingParts: List<MediaPart> = emptyList()
+    private var pendingLocalMs = 0
+    private var playWhenPrepared = false
+    private var rangeStartMs = 0L
+    private var rangeEndMs = 0L
+    private var seekingFromUser = false
+    private var resumeAfterScrub = false
 
     /** 当前播放位置（当天全局 ms） */
     private var currentGlobalMs = 0L
     /** 用户的播放意图（默认不自动播放 = false） */
     private var playing = false
-
-    /** 播放器还没 prepared 时暂存的 seek / 播放意图（修复“准备中点播放/拖动无反应”） */
-    private var seekWhenPrepared = 0
-    private var playWhenPrepared = false
 
     /** 从相册某条总录像进入时的定位时间（epoch ms） */
     private var pendingInitialTimeMs: Long? = null
@@ -105,22 +135,14 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
     private var loadToken = 0
     private var loadRequested = false
 
-    /** Surface 还没就绪时暂存的分段加载请求 */
-    private class PendingLoad(val index: Int, val localMs: Int, val play: Boolean)
-    private var pendingLoad: PendingLoad? = null
-
     private var dateKey: String = dateKeyOf(System.currentTimeMillis())
 
     // 画面（cell）
     private var cellIndex = -1
     private var cellNames: List<String> = emptyList()
-    private var cellRects: List<IntArray> = emptyList()
 
     /** 拖动节流 */
     private var lastScrubSeek = 0L
-
-    /** 暂停切画面时：start 一帧再 pause，强制 TextureView 应用新裁剪矩阵 */
-    private var pauseAfterCellFrame = false
 
     // 高德地图
     private var aMap: AMap? = null
@@ -138,9 +160,13 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
             if (prepared) {
                 val seg = segments.getOrNull(curSegIndex)
                 if (seg != null) {
-                    val pos = runCatching { player?.currentPosition ?: 0 }.getOrDefault(0)
+                    val pos = runCatching { players.values.firstOrNull()?.currentPosition ?: 0 }.getOrDefault(0)
                     currentGlobalMs = seg.startMs + pos
-                    binding.timeline.setCurrent(currentGlobalMs)
+                    if (!seekingFromUser) {
+                        binding.seekBar.max = (rangeEndMs - rangeStartMs).toInt().coerceAtLeast(1)
+                        binding.seekBar.progress = (currentGlobalMs - rangeStartMs).toInt()
+                            .coerceIn(0, binding.seekBar.max)
+                    }
                     binding.tvCurrent.text = timeText(currentGlobalMs)
                     updateTrackMarker()
                 }
@@ -150,8 +176,6 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        val appTheme = application as UvcApp
-        setTheme(appTheme.themeResId(appTheme.currentThemeMode))
         super.onCreate(savedInstanceState)
         binding = ActivityPlaybackBinding.inflate(layoutInflater)
         setContentView(binding.root)
@@ -163,11 +187,8 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
 
         binding.btnBack.setOnClickListener { finish() }
         binding.btnDate.setOnClickListener { pickDate() }
-        binding.btnCell.setOnClickListener { cycleCell() }
+        binding.btnCell.setOnClickListener { showCellMenu() }
         binding.btnFullscreen.setOnClickListener { openFullscreen() }
-
-        binding.playbackView.surfaceTextureListener = this
-        binding.playbackView.surfaceTexture?.let { onSurfaceTextureAvailable(it, 0, 0) }
 
         // 播放控制
         binding.btnPlayPause.setOnClickListener { togglePlay() }
@@ -175,8 +196,34 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
         binding.btnRewind.setOnClickListener { seekBy(-10_000) }
         binding.btnForward.setOnClickListener { seekBy(10_000) }
 
-        // 时间轴拖动
-        binding.timeline.onScrub = { globalMs, phase -> onScrub(globalMs, phase) }
+        // 普通进度条（与内置视频播放器一致）
+        binding.seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (!fromUser || segments.isEmpty()) return
+                val now = SystemClock.uptimeMillis()
+                if (now - lastScrubSeek >= 100) {
+                    lastScrubSeek = now
+                    onScrub(rangeStartMs + progress, TimelineView.Phase.MOVE)
+                }
+            }
+
+            override fun onStartTrackingTouch(sb: SeekBar?) {
+                seekingFromUser = true
+                resumeAfterScrub = playing
+                if (playing) pausePlay()
+            }
+
+            override fun onStopTrackingTouch(sb: SeekBar?) {
+                seekingFromUser = false
+                if (segments.isNotEmpty()) {
+                    onScrub(rangeStartMs + (sb?.progress ?: 0), TimelineView.Phase.END)
+                }
+                if (resumeAfterScrub) {
+                    resumeAfterScrub = false
+                    startPlay()
+                }
+            }
+        })
 
         // 双击暂停/播放（GestureDetector）
         val gd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
@@ -190,7 +237,7 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
                 return true
             }
         })
-        binding.playbackView.setOnTouchListener { _, e -> gd.onTouchEvent(e); true }
+        binding.videoGrid.setOnTouchListener { _, e -> gd.onTouchEvent(e); true }
 
         updatePlayIcon()
         uiHandler.post(progressTask)
@@ -214,6 +261,10 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
             }
             drawTrack()
         }.onFailure { Logger.w("playback", "map init failed: ${it.message}") }
+
+        // 进入页面即扫描当天录像（旧版靠 TextureView surface 回调触发；
+        // 改用 VideoView 后必须显式启动，否则一直停在加载黑屏）
+        if (!loadRequested) loadDate()
     }
 
     // ------------------------------------------------------------------
@@ -247,7 +298,6 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
         val key = dateKey
         // 立即清掉上一日期的画面/播放器，避免切到空日期时残留定格
         releasePlayer()
-        pendingLoad = null
         playing = false
         playWhenPrepared = false
         updatePlayIcon()
@@ -292,14 +342,21 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
             if (dur <= 0) continue
             // 用文件时间戳定位全局起点（文件名 ALL_yyyyMMdd_HHmmss）
             val tsStart = parseAllTs(m.name)
+            val totalMeta = m.groupKey?.let { gk ->
+                runCatching { app.mediaSaver.readTotalMeta(gk, videoTree, m.file) }.getOrNull()
+            }
             // 录制时写入的画面元数据（可能不存在：旧录像/旧版本）
-            val meta = runCatching {
-                app.mediaSaver.readCompositeMeta(m.name, videoTree, m.file)
-            }.getOrNull()
+            val meta = if (m.parts.isEmpty()) {
+                runCatching { app.mediaSaver.readCompositeMeta(m.name, videoTree, m.file) }.getOrNull()
+            } else null
+            val cellNames = totalMeta?.cellNames?.takeIf { it.isNotEmpty() }
+                ?: meta?.cellNames ?: emptyList()
             list.add(
                 SegInfo(
                     m.file, m.uri, tsStart, tsStart + dur, dur,
-                    meta?.cellNames ?: emptyList()
+                    cellNames,
+                    m.parts,
+                    m.groupKey
                 )
             )
         }
@@ -314,12 +371,14 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
         binding.tvGap.setTextColor(Color.WHITE)
         binding.tvGap.text = getString(com.wheeltech.blindcam.R.string.playback_loading)
         binding.tvGap.visibility = View.VISIBLE
-        binding.btnCell.text = getString(com.wheeltech.blindcam.R.string.playback_all_cells)
+        binding.btnCell.text = getString(com.wheeltech.blindcam.R.string.playback_all_cells) + "  ▾"
         binding.tvCellName.text = ""
         binding.tvCellName.visibility = View.GONE
         binding.btnCenterPlay.visibility = View.GONE
-        binding.timeline.setSegments(emptyList(), 0, 86_400_000)
-        binding.timeline.setCurrent(0)
+        rangeStartMs = 0L
+        rangeEndMs = 86_400_000L
+        binding.seekBar.max = 86_400_000
+        binding.seekBar.progress = 0
         binding.tvCurrent.text = "00:00:00"
         binding.tvRangeEnd.text = "00:00:00"
         binding.btnDate.text = dateLabel(dateKey)
@@ -336,19 +395,22 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
             segments = emptyList()
             curSegIndex = -1
             resetCells()
-            binding.timeline.setSegments(emptyList(), 0, 86_400_000)
-            binding.timeline.setCurrent(0)
+            rangeStartMs = 0L
+            rangeEndMs = 86_400_000L
+            binding.seekBar.max = 86_400_000
+            binding.seekBar.progress = 0
             showEmptyDate()
             return
         }
 
+        Logger.i("playback", "applyLoaded segments=${list.size}")
         segments = list
         val rangeStart = list.first().startMs
         val rangeEnd = list.last().endMs
-        binding.timeline.setSegments(
-            list.map { TimelineView.Segment(it.startMs, it.endMs) },
-            rangeStart, rangeEnd
-        )
+        rangeStartMs = rangeStart
+        rangeEndMs = rangeEnd
+        binding.seekBar.max = (rangeEnd - rangeStart).toInt().coerceAtLeast(1)
+        binding.seekBar.progress = 0
         binding.tvRangeEnd.text = timeText(rangeEnd)
 
         // 从相册某条总录像进入：定位到该段的时间点；否则定位到当天第一段起点
@@ -360,7 +422,7 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
             .let { if (it < 0) 0 else it }
         val local = (target - list[idx].startMs).toInt().coerceIn(0, list[idx].durationMs.toInt())
         currentGlobalMs = target
-        binding.timeline.setCurrent(currentGlobalMs)
+        updateSeekBar(currentGlobalMs)
         binding.tvCurrent.text = timeText(currentGlobalMs)
         binding.blackOverlay.visibility = View.GONE
         hideGap()
@@ -375,7 +437,7 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
         binding.tvGap.setTextColor(Color.WHITE)
         binding.tvGap.text = getString(com.wheeltech.blindcam.R.string.playback_no_recording)
         binding.tvGap.visibility = View.VISIBLE
-        binding.btnCell.text = getString(com.wheeltech.blindcam.R.string.playback_all_cells)
+        binding.btnCell.text = getString(com.wheeltech.blindcam.R.string.playback_all_cells) + "  ▾"
         binding.tvCellName.text = ""
         binding.tvCellName.visibility = View.GONE
         binding.btnDate.text = dateLabel(dateKey)
@@ -394,14 +456,12 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
 
     private fun resetCells() {
         cellNames = emptyList()
-        cellRects = emptyList()
         cellIndex = -1
-        applyCellTransform()
     }
 
     /**
-     * 按“录制时”的画面元数据建立画面名称与裁剪矩形。
-     * 旧录像没有 .json 元数据时退回当前在线摄像头；再没有则给通用名。
+     * 按“录制时”的画面元数据建立画面名称。
+     * 新架构每路一个独立 MP4，不再需要视频像素裁剪矩形。
      */
     private fun applySegmentCells(index: Int) {
         val seg = segments.getOrNull(index)
@@ -425,136 +485,90 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
                 List(4) { "摄像头 ${it + 1}" }
             }
         }
-        setCells(names)
+        val count = seg?.parts?.size?.takeIf { it > 0 }
+            ?: (if (seg?.cellNames?.isNotEmpty() == true) seg.cellNames.size else names.size)
+        setCells(names, count.coerceIn(1, 4))
     }
 
-    private fun setCells(rawNames: List<String>) {
-        val n = rawNames.size.coerceIn(1, 4)
-        val oldCount = cellRects.size
-        cellNames = rawNames.take(n)
-        cellRects = List(n) { cellRect(it, n) }
-        if (oldCount != n || cellIndex >= n) {
-            cellIndex = -1
-        }
-        binding.btnCell.text = if (cellIndex < 0)
-            getString(com.wheeltech.blindcam.R.string.playback_all_cells)
-        else cellNames[cellIndex]
-        if (cellIndex < 0) {
-            binding.tvCellName.text = ""
-            binding.tvCellName.visibility = View.GONE
-        } else {
-            binding.tvCellName.text = cellNames[cellIndex]
-            binding.tvCellName.visibility = View.VISIBLE
-        }
-        applyCellTransform()
+    private fun setCells(rawNames: List<String>, count: Int) {
+        val n = count.coerceIn(1, 4)
+        cellNames = List(n) { i -> rawNames.getOrNull(i) ?: "画面 ${i + 1}" }
+        if (cellIndex >= n) cellIndex = -1
+        updateCellLabel()
     }
 
-    private fun cycleCell() {
-        if (cellRects.isEmpty()) return
-        cellIndex = if (cellIndex + 1 >= cellRects.size) -1 else cellIndex + 1
-        applyCellTransform()
-        // 暂停时 TextureView 的缓存帧不会自动按新矩阵重绘：seek 到当前位置强制出一帧，
-        // 否则会出现“按钮文字变了、画面还是全部画面”的假切换（真机已复现）。
-        refreshPausedFrame()
-        if (cellIndex < 0) {
-            binding.btnCell.text = getString(com.wheeltech.blindcam.R.string.playback_all_cells)
-            binding.tvCellName.text = ""
-            binding.tvCellName.visibility = View.GONE
-        } else {
-            binding.btnCell.text = cellNames[cellIndex]
-            binding.tvCellName.text = cellNames[cellIndex]
-            binding.tvCellName.visibility = View.VISIBLE
-        }
-    }
-
-    /** 暂停状态下强制刷新一帧，使 TextureView 应用最新裁剪矩阵 */
-    private fun refreshPausedFrame() {
-        val p = player ?: return
-        if (!prepared || p.isPlaying) return
-        // 仅 seek 到原位置很多机型不会重绘；先 start 一帧再 pause 最可靠
-        pauseAfterCellFrame = true
-        runCatching { p.start() }
-        uiHandler.postDelayed({
-            if (pauseAfterCellFrame) {
-                pauseAfterCellFrame = false
-                runCatching { p.pause() }
-                updatePlayIcon()
-            }
-        }, 120)
-        binding.playbackView.invalidate()
-    }
-
-    /**
-     * 固定像素矩阵（修复切换卡死）：
-     * TextureView transform 工作在视图像素坐标。
-     * 把目标 cell（视频坐标 x,y,w,h，视频 1280x720）放大到整个视图。
-     */
-    private fun applyCellTransform() {
-        val vw = binding.playbackView.width.toFloat()
-        val vh = binding.playbackView.height.toFloat()
-        if (vw <= 0 || vh <= 0) {
-            binding.playbackView.post { applyCellTransform() }
-            return
-        }
-        val m = Matrix()
-        if (cellIndex < 0) {
-            // 全部画面：完整显示，fitCenter（宽高比不一致时上下/左右留黑，不裁切）。
-            // 注意 TextureView 的基准图是“拉伸铺满 View”的，矩阵缩放要换算到 View 像素：
-            // scaleX = S * 视频宽 / View 宽，scaleY = S * 视频高 / View 高。
-            val s = minOf(vw / OW, vh / OH)
-            m.setScale(s * OW / vw, s * OH / vh)
-            m.postTranslate((vw - OW * s) / 2f, (vh - OH * s) / 2f)
-        } else {
-            val rect = cellRects.getOrNull(cellIndex) ?: return
-            val cx = rect[0]; val cy = rect[1]; val cw = rect[2]; val ch = rect[3]
-            if (cw <= 0 || ch <= 0) return
-            // 单路：必须放大到铺满视图，把另一格移出可视区；fit 会把两格一起缩进来。
-            val s = maxOf(vw / cw, vh / ch)
-            m.setScale(s * OW / vw, s * OH / vh)
-            m.postTranslate(
-                (vw - cw * s) / 2f - cx * s,
-                (vh - ch * s) / 2f - cy * s
+    /** 与主页一致：点“全部画面/画面名”打开下拉菜单选择播放哪些画面 */
+    private fun showCellMenu() {
+        if (cellNames.isEmpty()) return
+        val entries = ArrayList<GlassMenuPopup.Entry>()
+        val actions = ArrayList<() -> Unit>()
+        entries.add(GlassMenuPopup.Entry.Header(getString(R.string.playback_choose_cell)))
+        actions.add {}
+        entries.add(
+            GlassMenuPopup.Entry.Item(
+                getString(R.string.playback_all_cells),
+                selected = cellIndex < 0
             )
-        }
-        binding.playbackView.setTransform(m)
-        Logger.i(
-            "playback",
-            "cellTransform idx=$cellIndex cells=${cellRects.size} view=${vw.toInt()}x${vh.toInt()} " +
-                "m=$m"
         )
-        // 暂停时没有新帧，部分机型不会自动用新矩阵重绘缓存帧，强制重绘一次
-        binding.playbackView.invalidate()
+        actions.add { selectCell(-1) }
+        cellNames.forEachIndexed { i, name ->
+            entries.add(GlassMenuPopup.Entry.Item(name, selected = cellIndex == i))
+            actions.add { selectCell(i) }
+        }
+        GlassMenuPopup(this, entries) { idx ->
+            actions.getOrNull(idx)?.invoke()
+        }.show(binding.btnCell)
     }
 
-    /** 与 CompositeRecorder / 预览共用同一套布局规则（三路：第 3 路在顶部） */
-    private fun cellRect(index: Int, n: Int): IntArray {
-        val r = GridLayoutSpec.rect(n, index, OW, OH)
-        return intArrayOf(r.left, r.top, r.right, r.bottom)
+    private fun selectCell(index: Int) {
+        val target = if (index < 0 || index >= cellNames.size) -1 else index
+        if (target == cellIndex) return
+        cellIndex = target
+        updateCellLabel()
+        // 新架构：全部/单路只是选择播放哪些独立文件，不做合成画面裁剪。
+        val seg = segments.getOrNull(curSegIndex) ?: return
+        val local = (currentGlobalMs - seg.startMs).toInt().coerceAtLeast(0)
+        loadSegment(curSegIndex, local, playing)
+    }
+
+    private fun updateCellLabel() {
+        val label = if (cellIndex < 0) {
+            getString(com.wheeltech.blindcam.R.string.playback_all_cells)
+        } else {
+            cellNames.getOrNull(cellIndex).orEmpty()
+        }
+        binding.btnCell.text = "$label  ▾"
+        binding.tvCellName.text = ""
+        binding.tvCellName.visibility = View.GONE
     }
 
     /** 全屏：跟随当前画面（全部→全画面；某一路→裁剪该路） */
     private fun openFullscreen() {
         val seg = segments.getOrNull(curSegIndex) ?: return
+        if (cellIndex < 0 && seg.parts.size > 1) {
+            // 全画面是多路独立视频，交给单路全屏播放器会丢画面；要求先选一路
+            android.widget.Toast.makeText(this, "全部画面请先切换到单路画面再全屏", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        val part = if (cellIndex >= 0) seg.parts.getOrNull(cellIndex) else null
         resumeAfterFullscreen = playing
         val intent = android.content.Intent(this, VideoPlayerActivity::class.java)
-        seg.file?.let { intent.putExtra(VideoPlayerActivity.EXTRA_PATH, it.absolutePath) }
-        seg.uri?.let { intent.putExtra(VideoPlayerActivity.EXTRA_URI, it.toString()) }
-        intent.putExtra(VideoPlayerActivity.EXTRA_NAME,
+        part?.file?.let { intent.putExtra(VideoPlayerActivity.EXTRA_PATH, it.absolutePath) }
+        part?.uri?.let { intent.putExtra(VideoPlayerActivity.EXTRA_URI, it.toString()) }
+        if (part == null) {
+            seg.file?.let { intent.putExtra(VideoPlayerActivity.EXTRA_PATH, it.absolutePath) }
+            seg.uri?.let { intent.putExtra(VideoPlayerActivity.EXTRA_URI, it.toString()) }
+        }
+        intent.putExtra(
+            VideoPlayerActivity.EXTRA_NAME,
             if (cellIndex < 0) getString(com.wheeltech.blindcam.R.string.playback_all_cells)
-            else cellNames[cellIndex])
-        // 全屏从当前播放位置继续，并保持“暂停/播放”意图
+            else cellNames.getOrNull(cellIndex).orEmpty()
+        )
         intent.putExtra(
             VideoPlayerActivity.EXTRA_START_MS,
-            runCatching { player?.currentPosition ?: 0 }.getOrDefault(0)
+            runCatching { players.values.firstOrNull()?.currentPosition ?: 0 }.getOrDefault(0)
         )
         intent.putExtra(VideoPlayerActivity.EXTRA_AUTOPLAY, playing)
-        if (cellIndex >= 0) {
-            val r = cellRects[cellIndex]
-            intent.putExtra(VideoPlayerActivity.EXTRA_CROP_X, r[0])
-            intent.putExtra(VideoPlayerActivity.EXTRA_CROP_Y, r[1])
-            intent.putExtra(VideoPlayerActivity.EXTRA_CROP_W, r[2])
-            intent.putExtra(VideoPlayerActivity.EXTRA_CROP_H, r[3])
-        }
         startActivity(intent)
     }
 
@@ -564,78 +578,180 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
 
     private fun loadSegment(index: Int, localMs: Int, play: Boolean) {
         val seg = segments.getOrNull(index) ?: return
-        if (surface == null) {
-            // Surface 尚未就绪（刚进页面/刚重建）：等 onSurfaceTextureAvailable 再真正 prepare
-            pendingLoad = PendingLoad(index, localMs, play)
-            currentGlobalMs = seg.startMs + localMs
-            return
-        }
-        pendingLoad = null
-        if (index == curSegIndex && player != null) {
-            currentGlobalMs = seg.startMs + localMs
-            binding.timeline.setCurrent(currentGlobalMs)
-            if (prepared) {
-                seekLocal(localMs)
-                playing = play
-                if (play) startPlay() else pausePlay()
-            } else {
-                // 还在 prepareAsync：先记住意图，准备好后一次性 seek + 播放
-                seekWhenPrepared = localMs
-                playWhenPrepared = play
-                playing = play
-                updatePlayIcon()
-            }
-            return
-        }
         releasePlayer()
         curSegIndex = index
-        // 画面名称/裁剪区域跟随“这一段录制时”的布局
         applySegmentCells(index)
         updateTrackForSegment(index)
-        try {
-            val mp = MediaPlayer()
-            when {
-                seg.file != null -> mp.setDataSource(seg.file.absolutePath)
-                seg.uri != null -> mp.setDataSource(this, seg.uri)
+        val sources = seg.sourcesFor(cellIndex).filter { it.file != null || it.uri != null }
+        if (sources.isEmpty()) {
+            binding.tvGap.text = getString(com.wheeltech.blindcam.R.string.playback_no_content)
+            binding.tvGap.visibility = View.VISIBLE
+            return
+        }
+        pendingLocalMs = localMs
+        playWhenPrepared = play
+        playing = play
+        prepared = false
+        readyCount = 0
+        pendingParts = sources
+        buildVideoViews(sources)
+        Logger.i("playback", "load index=$index parts=${seg.parts.size} cell=$cellIndex sources=${sources.size} names=${cellNames.size}")
+        currentGlobalMs = seg.startMs + localMs
+        updateSeekBar(currentGlobalMs)
+    }
+
+    private fun buildVideoViews(parts: List<MediaPart>) {
+        binding.videoGrid.removeAllViews()
+        videoViews.clear()
+        players.clear()
+        playerSurfaces.clear()
+        completedCount = 0
+        readyCount = 0
+        for (i in parts.indices) {
+            val tv = TextureView(this)
+            tv.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) {
+                    startPlayer(i, parts[i], st)
+                }
+
+                override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {
+                    players[i]?.let { mp ->
+                        applyFit(tv, mp.videoWidth, mp.videoHeight)
+                    }
+                }
+
+                override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                    releasePlayerAt(i)
+                    return true
+                }
+
+                override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
             }
-            surface?.let { mp.setSurface(it) }
-            mp.isLooping = false
-            seekWhenPrepared = localMs
-            playWhenPrepared = play
-            mp.setOnPreparedListener {
-                prepared = true
-                seekPrepared(it, seekWhenPrepared)
-                if (playWhenPrepared) runCatching { it.start() }
-                playing = playWhenPrepared
-                updatePlayIcon()
-                // 首帧可能还没绘制，布局矩阵在 prepare 后再补一次
-                binding.playbackView.post { applyCellTransform() }
+            val cell = GridLayoutSpec.cell(parts.size.coerceIn(1, 4), i)
+            val lp = GridLayout.LayoutParams().apply {
+                width = 0
+                height = 0
+                rowSpec = GridLayout.spec(cell.row, cell.rowSpan, 1f)
+                columnSpec = GridLayout.spec(cell.col, cell.colSpan, 1f)
             }
-            mp.setOnCompletionListener {
-                if (curSegIndex < segments.size - 1) {
-                    advanceSegment()
-                } else {
-                    // 最后一段播完：回到暂停态并显示中央播放钮
-                    playing = false
-                    playWhenPrepared = false
-                    updatePlayIcon()
-                    binding.btnCenterPlay.visibility = View.VISIBLE
+            binding.videoGrid.addView(tv, lp)
+            videoViews.add(tv)
+        }
+        binding.videoGrid.post {
+            videoViews.forEachIndexed { i, tv ->
+                if (tv.isAvailable && !players.containsKey(i)) {
+                    startPlayer(i, parts[i], tv.surfaceTexture)
                 }
             }
-            mp.setOnErrorListener { _, w, e ->
-                Logger.w("playback", "error w=$w e=$e")
+        }
+    }
+
+    private fun startPlayer(index: Int, part: MediaPart, st: SurfaceTexture?) {
+        if (st == null || players.containsKey(index)) return
+        val tv = videoViews.getOrNull(index) ?: return
+        val surface = Surface(st)
+        val mp = MediaPlayer()
+        try {
+            when {
+                part.file != null -> mp.setDataSource(part.file.absolutePath)
+                part.uri != null -> mp.setDataSource(this, part.uri)
+            }
+            mp.setSurface(surface)
+            mp.isLooping = false
+            players[index] = mp
+            playerSurfaces[index] = surface
+            mp.setOnPreparedListener {
+                runCatching { it.seekTo(pendingLocalMs) }
+                applyFit(tv, it.videoWidth, it.videoHeight)
+                readyCount++
+                Logger.i("playback", "prepared view=$index/${pendingParts.size} size=${tv.width}x${tv.height}")
+                if (readyCount >= pendingParts.size) {
+                    prepared = true
+                    if (playWhenPrepared) {
+                        startPlay()
+                    } else {
+                        players.values.forEach { p -> runCatching { p.start() } }
+                        uiHandler.postDelayed({
+                            if (!playing) {
+                                players.values.forEach { p -> runCatching { p.pause() } }
+                                binding.btnCenterPlay.visibility = View.VISIBLE
+                                updatePlayIcon()
+                            }
+                        }, 120)
+                    }
+                }
+            }
+            mp.setOnCompletionListener {
+                if (playing && ++completedCount >= pendingParts.size) {
+                    if (curSegIndex < segments.size - 1) advanceSegment()
+                    else {
+                        playing = false
+                        playWhenPrepared = false
+                        updatePlayIcon()
+                        binding.btnCenterPlay.visibility = View.VISIBLE
+                    }
+                }
+            }
+            mp.setOnVideoSizeChangedListener { _, w, h ->
+                applyFit(tv, w, h)
+            }
+            mp.setOnErrorListener { _, what, extra ->
+                Logger.w("playback", "MediaPlayer error what=$what extra=$extra")
                 prepared = false
                 playing = false
                 updatePlayIcon()
                 true
             }
             mp.prepareAsync()
-            player = mp
-            currentGlobalMs = seg.startMs + localMs
-            binding.timeline.setCurrent(currentGlobalMs)
         } catch (t: Throwable) {
-            Logger.w("playback", "loadSegment failed: ${t.message}")
+            Logger.w("playback", "startPlayer failed: ${t.message}")
+            runCatching { mp.release() }
+            runCatching { surface.release() }
         }
+    }
+
+    private fun applyFit(tv: TextureView, videoW: Int, videoH: Int) {
+        if (videoW <= 0 || videoH <= 0) return
+        val vw = tv.width.toFloat()
+        val vh = tv.height.toFloat()
+        if (vw <= 0 || vh <= 0) {
+            tv.post { applyFit(tv, videoW, videoH) }
+            return
+        }
+        val m = Matrix()
+        // 旧版总录像是一个 1280x720 合成文件，没有独立分路；选中某一路时只能裁切查看。
+        // 新版每路独立 MP4（parts 非空）绝不做裁剪，按原始比例完整显示。
+        val legacy = segments.getOrNull(curSegIndex)?.parts?.isEmpty() == true
+        if (legacy && cellIndex >= 0 && cellNames.size > 1) {
+            val n = cellNames.size.coerceIn(2, 4)
+            val r = GridLayoutSpec.rect(n, cellIndex, videoW, videoH)
+            val cw = (r.right - r.left).toFloat()
+            val ch = (r.bottom - r.top).toFloat()
+            if (cw > 0 && ch > 0) {
+                val s = maxOf(vw / cw, vh / ch)
+                m.setScale(s * videoW / vw, s * videoH / vh)
+                m.postTranslate(
+                    (vw - cw * s) / 2f - r.left * s,
+                    (vh - ch * s) / 2f - r.top * s
+                )
+                tv.setTransform(m)
+                tv.invalidate()
+                return
+            }
+        }
+        val s = maxOf(vw / videoW, vh / videoH)
+        m.setScale(s * videoW / vw, s * videoH / vh)
+        m.postTranslate((vw - videoW * s) / 2f, (vh - videoH * s) / 2f)
+        tv.setTransform(m)
+        tv.invalidate()
+    }
+
+    private fun releasePlayerAt(index: Int) {
+        players.remove(index)?.let { mp ->
+            runCatching { mp.setSurface(null) }
+            runCatching { mp.release() }
+        }
+        playerSurfaces.remove(index)?.let { runCatching { it.release() } }
     }
 
     private fun advanceSegment() {
@@ -644,26 +760,13 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
         }
     }
 
-    private fun seekPrepared(p: MediaPlayer, ms: Int) {
-        val target = ms.coerceAtLeast(0)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            runCatching { p.seekTo(target.toLong(), MediaPlayer.SEEK_CLOSEST) }
-        } else {
-            runCatching { p.seekTo(target) }
-        }
-    }
-
     private fun seekLocal(ms: Int) {
-        val p = player ?: return
-        if (!prepared) {
-            seekWhenPrepared = ms
-            currentGlobalMs = (segments.getOrNull(curSegIndex)?.startMs ?: 0) + ms
-            binding.timeline.setCurrent(currentGlobalMs)
-            return
+        pendingLocalMs = ms.coerceAtLeast(0)
+        if (prepared) {
+            players.values.forEach { runCatching { it.seekTo(pendingLocalMs) } }
         }
-        seekPrepared(p, ms)
-        currentGlobalMs = (segments.getOrNull(curSegIndex)?.startMs ?: 0) + ms
-        binding.timeline.setCurrent(currentGlobalMs)
+        currentGlobalMs = (segments.getOrNull(curSegIndex)?.startMs ?: 0) + pendingLocalMs
+        updateSeekBar(currentGlobalMs)
     }
 
     private fun onScrub(globalMs: Long, phase: TimelineView.Phase) {
@@ -696,54 +799,50 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
                 }
             }
         }
-        if (phase == TimelineView.Phase.END) seekLocal(local)
+        if (phase == TimelineView.Phase.END) {
+            seekLocal(local)
+            if (!playing) refreshPausedFrame()
+        }
+    }
+
+    /** 暂停拖动后强制出一帧：部分机型 seek 不刷新 TextureView 缓存帧 */
+    private fun refreshPausedFrame() {
+        if (playing || !prepared) return
+        players.values.forEach { runCatching { it.start() } }
+        uiHandler.postDelayed({
+            if (!playing) {
+                players.values.forEach { runCatching { it.pause() } }
+                updatePlayIcon()
+            }
+        }, 120)
     }
 
     private fun togglePlay() {
         if (segments.isEmpty()) return
-        if (pauseAfterCellFrame) {
-            // 正在为“暂停切画面”做 120ms 的临时播放：用户此时点是希望继续播放
-            pauseAfterCellFrame = false
+        if (!prepared) {
             playing = true
             playWhenPrepared = true
             binding.btnCenterPlay.visibility = View.GONE
             updatePlayIcon()
             return
         }
-        val p = player
-        if (!prepared || p == null) {
-            // 还在 prepareAsync：立即反馈“准备播放”，并在 onPrepared 后自动开始
-            playing = true
-            playWhenPrepared = true
-            binding.btnCenterPlay.visibility = View.GONE
-            val seg = segments.firstOrNull { currentGlobalMs in it.startMs..it.endMs }
-            if (seg != null) {
-                val idx = segments.indexOf(seg)
-                val local = (currentGlobalMs - seg.startMs).toInt().coerceAtLeast(0)
-                if (idx != curSegIndex || player == null) {
-                    loadSegment(idx, local, true)
-                }
-            }
-            updatePlayIcon()
-            return
-        }
-        if (p.isPlaying) pausePlay() else startPlay()
+        val playingNow = players.values.firstOrNull()?.isPlaying == true
+        if (playingNow) pausePlay() else startPlay()
     }
 
     private fun startPlay() {
-        pauseAfterCellFrame = false
         playing = true
         playWhenPrepared = true
-        if (prepared) runCatching { player?.start() }
+        completedCount = 0
+        if (prepared) players.values.forEach { runCatching { it.start() } }
         binding.btnCenterPlay.visibility = View.GONE
         updatePlayIcon()
     }
 
     private fun pausePlay() {
-        pauseAfterCellFrame = false
         playing = false
         playWhenPrepared = false
-        if (prepared) runCatching { player?.pause() }
+        if (prepared) players.values.forEach { runCatching { it.pause() } }
         binding.btnCenterPlay.visibility = View.VISIBLE
         updatePlayIcon()
     }
@@ -757,15 +856,20 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
 
     private fun updatePlayIcon() {
         val isPlaying = if (prepared) {
-            runCatching { player?.isPlaying == true }.getOrDefault(playing)
+            players.values.firstOrNull()?.isPlaying == true
         } else {
             playing
         }
-        // 播放按钮：图标随播放状态切换
         binding.btnPlayPause.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
         binding.btnCenterPlay.text = if (isPlaying) "❚❚" else "▶"
-        // 暂停时显示中央播放钮，播放时隐藏（空日期/加载中由各自流程再覆盖）
         binding.btnCenterPlay.visibility = if (isPlaying) View.GONE else View.VISIBLE
+    }
+
+    private fun updateSeekBar(globalMs: Long) {
+        if (rangeEndMs <= rangeStartMs) return
+        val max = (rangeEndMs - rangeStartMs).toInt().coerceAtLeast(1)
+        if (binding.seekBar.max != max) binding.seekBar.max = max
+        binding.seekBar.progress = (globalMs - rangeStartMs).toInt().coerceIn(0, max)
     }
 
     private fun timeText(dayMs: Long): String {
@@ -942,42 +1046,11 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
     }
 
     // ------------------------------------------------------------------
-    // Surface
+    // 生命周期
     // ------------------------------------------------------------------
 
-    override fun onSurfaceTextureAvailable(st: SurfaceTexture, width: Int, height: Int) {
-        if (surface == null) surface = Surface(st)
-        if (segments.isEmpty()) {
-            // 扫描还没开始才启动；正在后台扫描时不要重复 loadDate（会反复清屏）
-            if (!loadRequested) loadDate()
-            return
-        }
-        val pending = pendingLoad
-        if (pending != null) {
-            pendingLoad = null
-            loadSegment(pending.index, pending.localMs, pending.play)
-        } else {
-            // surface 重建：把当前位置重新加载（重新挂到新 surface）
-            val idx = segments.indexOfFirst { currentGlobalMs in it.startMs..it.endMs }
-                .let { if (it < 0) 0 else it }
-            val local = (currentGlobalMs - segments[idx].startMs).toInt().coerceAtLeast(0)
-            loadSegment(idx, local, playing)
-        }
-    }
-
-    override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, width: Int, height: Int) {
-        applyCellTransform()
-    }
-
-    override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
-        releasePlayer()
-        surface = null
-        return true
-    }
-
-    override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
-
     override fun onResume() {
+        if (recreateIfThemeChanged()) return
         super.onResume()
         runCatching { binding.mapView.onResume() }
         // 从全屏播放器返回：仅当进入全屏前在播放时才恢复，避免“返回后自动响起”
@@ -1003,16 +1076,23 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
         loadToken++
         uiHandler.removeCallbacksAndMessages(null)
         releasePlayer()
-        surface = null
         runCatching { binding.mapView.onDestroy() }
         super.onDestroy()
     }
 
     private fun releasePlayer() {
-        runCatching { player?.setSurface(null) }
-        runCatching { player?.release() }
-        player = null
+        players.values.forEach { mp ->
+            runCatching { mp.setSurface(null) }
+            runCatching { mp.release() }
+        }
+        players.clear()
+        playerSurfaces.values.forEach { runCatching { it.release() } }
+        playerSurfaces.clear()
+        videoViews.clear()
+        runCatching { binding.videoGrid.removeAllViews() }
         prepared = false
+        playing = false
+        playWhenPrepared = false
         curSegIndex = -1
     }
 
@@ -1079,4 +1159,20 @@ class PlaybackActivity : AppCompatActivity(), TextureView.SurfaceTextureListener
 /** 由毫秒时间生成日期 key（yyyyMMdd）。GalleryMedia.dateKey 是实例属性，不能当静态函数调用 */
 private fun dateKeyOf(ms: Long): String =
     SimpleDateFormat("yyyyMMdd", Locale.US).format(Date(ms))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

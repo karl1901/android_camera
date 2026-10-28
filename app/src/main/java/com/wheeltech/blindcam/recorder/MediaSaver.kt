@@ -11,6 +11,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * 媒体保存：拍照 JPEG、录像 MP4 落地。
@@ -24,6 +25,8 @@ import java.io.FileOutputStream
  */
 class MediaSaver(private val context: Context) {
 
+    private val cacheSeq = AtomicLong(0L)
+
     /**
      * 总录像的分段元数据：记录录制时参与合成的画面名称/路数。
      * 回看时优先使用它，而不是“当前还插着的摄像头”，这样拔掉摄像头后
@@ -35,11 +38,24 @@ class MediaSaver(private val context: Context) {
         val height: Int
     )
 
+    /**
+     * 新总录像组元数据：每个画框一个独立 MP4，回看按组同步播放。
+     */
+    data class TotalMeta(
+        val cellNames: List<String>,
+        val partNames: List<String>,
+        val previewName: String,
+        val width: Int,
+        val height: Int
+    )
+
     companion object {
         private const val TAG = "media-saver"
         private const val PHOTO_DIR = "blindcam_photos"
         private const val VIDEO_DIR = "blindcam_videos"
         private const val CACHE_DIR = "record_cache"
+        private val TOTAL_PART_REGEX =
+            Regex("^(ALL_\\d{8}_\\d{6})_c\\d+_", RegexOption.IGNORE_CASE)
     }
 
     /** 照片默认目录（私有） */
@@ -96,9 +112,14 @@ class MediaSaver(private val context: Context) {
     fun cacheDir(): File =
         File(context.cacheDir, CACHE_DIR).apply { mkdirs() }
 
-    /** 新缓存文件（录像写入用，默认 MP4） */
+    /** 新缓存文件（录像写入用，默认 MP4）。
+     *  同一毫秒内多路总录像会同时申请缓存文件，仅用时间戳会重名，
+     *  后一路会把前一路的 MP4 覆盖/删除，最终得到 0 字节损坏文件。 */
     fun newCacheFile(extension: String = "mp4"): File =
-        File(cacheDir(), "rec_${System.currentTimeMillis()}.$extension")
+        File(
+            cacheDir(),
+            "rec_${System.currentTimeMillis()}_${cacheSeq.incrementAndGet()}.$extension"
+        )
 
     /** 持久化 SAF 目录授权（重启后仍可写） */
     fun persistTreeUri(uri: Uri) {
@@ -143,16 +164,27 @@ class MediaSaver(private val context: Context) {
             val uri = Uri.parse(treeUri)
             val doc = createDocument(uri, mime, fileName)
                 ?: throw IllegalStateException("无法在所选目录创建文件：$fileName")
-            context.contentResolver.openOutputStream(doc, "w")?.use { out ->
-                cache.inputStream().use { it.copyTo(out, 64 * 1024) }
-            } ?: throw IllegalStateException("无法写入文件：$fileName")
+            try {
+                context.contentResolver.openOutputStream(doc, "w")?.use { out ->
+                    cache.inputStream().use { it.copyTo(out, 64 * 1024) }
+                } ?: throw IllegalStateException("无法写入文件：$fileName")
+            } catch (t: Throwable) {
+                // 复制失败必须删掉刚创建的 0 字节目标，避免相册出现损坏文件
+                runCatching { DocumentsContract.deleteDocument(context.contentResolver, doc) }
+                throw t
+            }
             cache.delete()
             return fileName
         }
         val target = File(defaultVideoDir(), fileName)
-        if (!cache.renameTo(target)) {
-            target.outputStream().use { out -> cache.inputStream().use { it.copyTo(out, 64 * 1024) } }
-            cache.delete()
+        try {
+            if (!cache.renameTo(target)) {
+                target.outputStream().use { out -> cache.inputStream().use { it.copyTo(out, 64 * 1024) } }
+                cache.delete()
+            }
+        } catch (t: Throwable) {
+            runCatching { if (target.exists()) target.delete() }
+            throw t
         }
         return target.absolutePath
     }
@@ -261,6 +293,95 @@ class MediaSaver(private val context: Context) {
         }
     }
 
+    /**
+     * 新总录像组元数据：groupKey=ALL_yyyyMMdd_HHmmss；每个 part 一个 MP4。
+     */
+    fun publishTotalMeta(
+        groupKey: String,
+        cellNames: List<String>,
+        partNames: List<String>,
+        previewName: String,
+        width: Int,
+        height: Int,
+        videoDirUri: String
+    ) {
+        val json = runCatching {
+            JSONObject().apply {
+                put("version", 2)
+                put("group", groupKey)
+                put("width", width)
+                put("height", height)
+                put("preview", previewName)
+                put("cells", JSONArray(cellNames))
+                put("parts", JSONArray(partNames))
+            }.toString()
+        }.getOrNull() ?: return
+        val name = "$groupKey.json"
+        runCatching {
+            if (videoDirUri.isNotBlank()) {
+                val tree = Uri.parse(videoDirUri)
+                val doc = createDocument(tree, "application/json", name)
+                    ?: throw IllegalStateException("无法创建总录像元数据")
+                context.contentResolver.openOutputStream(doc, "w")?.use {
+                    it.write(json.toByteArray(Charsets.UTF_8))
+                }
+            } else {
+                File(defaultVideoDir(), name).writeText(json, Charsets.UTF_8)
+            }
+            Logger.i(TAG, "total meta saved $name cells=${cellNames.size} parts=${partNames.size}")
+        }.onFailure { Logger.w(TAG, "total meta save failed $name: ${it.message}") }
+    }
+
+    fun readTotalMeta(groupKey: String, videoDirUri: String, file: File?): TotalMeta? {
+        val name = "$groupKey.json"
+        val text = runCatching {
+            if (file != null) {
+                File(file.parentFile, name).takeIf { it.isFile }?.readText(Charsets.UTF_8)
+            } else if (videoDirUri.isNotBlank()) {
+                val tree = Uri.parse(videoDirUri)
+                val doc = findChildUri(tree, name) ?: return null
+                context.contentResolver.openInputStream(doc)?.use {
+                    it.bufferedReader(Charsets.UTF_8).readText()
+                }
+            } else {
+                File(defaultVideoDir(), name).takeIf { it.isFile }?.readText(Charsets.UTF_8)
+            }
+        }.getOrNull() ?: return null
+        return runCatching {
+            val o = JSONObject(text)
+            fun strings(key: String): List<String> {
+                val arr = o.optJSONArray(key) ?: JSONArray()
+                return List(arr.length()) { arr.optString(it) }
+            }
+            TotalMeta(
+                cellNames = strings("cells"),
+                partNames = strings("parts"),
+                previewName = o.optString("preview"),
+                width = o.optInt("width", 1280),
+                height = o.optInt("height", 720)
+            )
+        }.onFailure { Logger.w(TAG, "parse total meta failed: ${it.message}") }
+            .getOrNull()
+    }
+
+    fun publishPreview(cache: File, name: String, videoDirUri: String): String =
+        publishFile(cache, name, videoDirUri, "image/jpeg")
+
+    fun deleteTotalMeta(groupKey: String, videoDirUri: String, file: File?) {
+        val name = "$groupKey.json"
+        runCatching {
+            if (file != null) {
+                File(file.parentFile, name).delete()
+            } else if (videoDirUri.isNotBlank()) {
+                findChildUri(Uri.parse(videoDirUri), name)?.let {
+                    DocumentsContract.deleteDocument(context.contentResolver, it)
+                }
+            } else {
+                File(defaultVideoDir(), name).delete()
+            }
+        }
+    }
+
     /** 在 SAF 目录树中按显示名查找子文档 */
     private fun findChildUri(tree: Uri, name: String): Uri? {
         val children = DocumentsContract.buildChildDocumentsUriUsingTree(
@@ -311,6 +432,26 @@ class MediaSaver(private val context: Context) {
      * - 私有目录项（[GalleryMedia.file] 非空）：file.delete()
      */
     fun deleteMedia(media: GalleryMedia): Boolean {
+        if (media.parts.isNotEmpty()) {
+            var any = false
+            media.parts.forEach { part ->
+                val ok = part.uri?.let { u ->
+                    runCatching { DocumentsContract.deleteDocument(context.contentResolver, u) }
+                        .getOrDefault(false)
+                } ?: part.file?.let { f ->
+                    runCatching { if (f.exists()) f.delete() else false }.getOrDefault(false)
+                } ?: false
+                any = any || ok
+            }
+            media.previewFile?.let { runCatching { it.delete() } }
+            media.previewUri?.let {
+                runCatching { DocumentsContract.deleteDocument(context.contentResolver, it) }
+            }
+            media.groupKey?.let {
+                deleteTotalMeta(it, media.treeUri.orEmpty(), media.file)
+            }
+            return any
+        }
         val deleted = media.uri?.let { u ->
             runCatching {
                 DocumentsContract.deleteDocument(context.contentResolver, u)
@@ -470,8 +611,64 @@ class MediaSaver(private val context: Context) {
         if (videoTreeUri.isNotBlank()) {
             out.addAll(scanTree(videoTreeUri, wantVideo = true, probe = probeDurations))
         }
-        return out.sortedByDescending { it.timeMs }
+        return groupTotalParts(out).sortedByDescending { it.timeMs }
     }
+
+    /**
+     * 新总录像由多个 ALL_<ts>_cN_*.mp4 组成；相册只显示一张卡。
+     * 旧版单文件总录像保持原样（回看内部仍兼容）。
+     */
+    private fun groupTotalParts(items: List<GalleryMedia>): List<GalleryMedia> {
+        val parts = ArrayList<GalleryMedia>()
+        val others = ArrayList<GalleryMedia>()
+        items.forEach { m ->
+            if (m.kind == GalleryMedia.Kind.ALL && TOTAL_PART_REGEX.containsMatchIn(m.name)) {
+                parts.add(m)
+            } else {
+                others.add(m)
+            }
+        }
+        if (parts.isEmpty()) return items
+        val groups = parts.groupBy { m ->
+            TOTAL_PART_REGEX.find(m.name)?.groupValues?.getOrNull(1) ?: m.name
+        }
+        groups.forEach { (key, list) ->
+            val sorted = list.sortedBy { it.name }
+            val first = sorted.first()
+            val previewName = "${key}_preview.jpg"
+            val previewFile = first.file?.parentFile
+                ?.let { File(it, previewName).takeIf { f -> f.isFile } }
+            val previewUri = if (first.uri != null && first.treeUri != null) {
+                runCatching { findChildUri(Uri.parse(first.treeUri), previewName) }.getOrNull()
+            } else null
+            others.add(
+                first.copy(
+                    name = key,
+                    groupKey = key,
+                    device = "总录像",
+                    timeMs = totalGroupTime(key) ?: first.timeMs,
+                    durationMs = sorted.maxOfOrNull { it.durationMs } ?: first.durationMs,
+                    parts = sorted.map {
+                        MediaPart(
+                            name = it.name,
+                            file = it.file,
+                            uri = it.uri,
+                            treeUri = it.treeUri
+                        )
+                    },
+                    previewFile = previewFile,
+                    previewUri = previewUri
+                )
+            )
+        }
+        return others
+    }
+
+    private fun totalGroupTime(groupKey: String): Long? = runCatching {
+        val m = Regex("ALL_(\\d{8})_(\\d{6})").find(groupKey) ?: return null
+        java.text.SimpleDateFormat("yyyyMMddHHmmss", java.util.Locale.US)
+            .parse(m.groupValues[1] + m.groupValues[2])?.time
+    }.getOrNull()
 
     private fun scanPrivate(
         dir: File,

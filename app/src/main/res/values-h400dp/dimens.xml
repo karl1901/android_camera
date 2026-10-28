@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="ui_tool_button">38dp</dimen>
+    <dimen name="ui_tool_padding">9dp</dimen>
+    <dimen name="ui_tool_margin">3dp</dimen>
+    <dimen name="ui_back_button">38dp</dimen>
+    <dimen name="ui_back_padding">9dp</dimen>
+    <dimen name="ui_capture_button">30dp</dimen>
+    <dimen name="ui_capture_padding">7dp</dimen>
+    <dimen name="ui_capture_margin">5dp</dimen>
+    <dimen name="ui_top_bar_pad_h">14dp</dimen>
+    <dimen name="ui_top_bar_pad_v">6dp</dimen>
+    <dimen name="ui_bar_title">18sp</dimen>
+    <dimen name="ui_page_pad_h">14dp</dimen>
+    <dimen name="ui_page_pad_v">10dp</dimen>
+    <dimen name="ui_card_pad">14dp</dimen>
+    <dimen name="ui_card_title">17sp</dimen>
+    <dimen name="ui_body">13sp</dimen>
+    <dimen name="ui_small">11sp</dimen>
+    <dimen name="ui_pill_pad_h">12dp</dimen>
+    <dimen name="ui_pill_pad_v">7dp</dimen>
+    <dimen name="ui_pill_text">13sp</dimen>
+    <dimen name="ui_tab_height">38dp</dimen>
+    <dimen name="ui_tab_text">13sp</dimen>
+    <dimen name="ui_center_play">54dp</dimen>
+    <dimen name="ui_player_button">44dp</dimen>
+    <dimen name="ui_gallery_pad">9dp</dimen>
+    <dimen name="ui_gallery_name">13sp</dimen>
+    <dimen name="ui_gallery_time">11sp</dimen>
+    <dimen name="ui_menu_row">44dp</dimen>
+    <dimen name="ui_menu_text">14sp</dimen>
+    <dimen name="ui_panel_pill_text">12sp</dimen>
+    <dimen name="ui_panel_pill_pad_h">9dp</dimen>
+    <dimen name="ui_panel_pill_pad_v">5dp</dimen>
+    <dimen name="ui_map_height">260dp</dimen>
+    <dimen name="ui_gallery_gap">5dp</dimen>
+</resources>
+
+

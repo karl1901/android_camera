@@ -1,25 +1,34 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <!-- 顶部工具栏图标按钮（跟随主题前景色） -->
+    <!-- 顶部工具栏图标按钮：所有主题的顶/底栏都是深色玻璃，图标统一白色 -->
     <style name="BlindCam.ToolButton" parent="Widget.AppCompat.ImageButton">
-        <item name="android:layout_width">44dp</item>
-        <item name="android:layout_height">44dp</item>
-        <item name="android:layout_marginStart">4dp</item>
+        <item name="android:layout_width">@dimen/ui_tool_button</item>
+        <item name="android:layout_height">@dimen/ui_tool_button</item>
+        <item name="android:layout_marginStart">@dimen/ui_tool_margin</item>
         <item name="android:background">?attr/selectableItemBackgroundBorderless</item>
         <item name="android:scaleType">fitCenter</item>
-        <item name="android:padding">10dp</item>
-        <item name="android:tint">?attr/colorOnSurface</item>
+        <item name="android:padding">@dimen/ui_tool_padding</item>
+        <item name="android:tint">@color/white</item>
+    </style>
+
+    <!-- 返回按钮：统一 34–42dp，去掉之前 26–28sp 的大字符圆圈 -->
+    <style name="BlindCam.BackButton" parent="BlindCam.ToolButton">
+        <item name="android:layout_width">@dimen/ui_back_button</item>
+        <item name="android:layout_height">@dimen/ui_back_button</item>
+        <item name="android:padding">@dimen/ui_back_padding</item>
+        <item name="android:src">@drawable/ic_back</item>
+        <item name="android:contentDescription">@string/common_back</item>
     </style>
 
     <!-- 悬浮在预览画面右下角的圆形拍照 / 录像按钮（做小，少挡视野） -->
     <style name="BlindCam.CaptureButton" parent="Widget.AppCompat.ImageButton">
-        <item name="android:layout_width">38dp</item>
-        <item name="android:layout_height">38dp</item>
-        <item name="android:layout_margin">6dp</item>
+        <item name="android:layout_width">@dimen/ui_capture_button</item>
+        <item name="android:layout_height">@dimen/ui_capture_button</item>
+        <item name="android:layout_margin">@dimen/ui_capture_margin</item>
         <item name="android:background">@drawable/bg_capture_button</item>
         <item name="android:scaleType">fitCenter</item>
-        <item name="android:padding">9dp</item>
+        <item name="android:padding">@dimen/ui_capture_padding</item>
         <item name="android:tint">@color/white</item>
     </style>
 

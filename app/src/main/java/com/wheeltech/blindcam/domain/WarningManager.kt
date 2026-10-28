@@ -378,6 +378,22 @@ class WarningManager(
         }
     }
 
+    /**
+     * 设置页“测试预警”：强制该路红框+蜂鸣 4 秒，方便确认红色警示特效与声音。
+     * 不参与运动检测状态，只改 UI 的 alerts 流；到时自动恢复。
+     */
+    fun testAlert(slot: Int, durationMs: Long = 4_000) {
+        mainHandler.post {
+            _alerts.value = _alerts.value.toMutableMap().apply { this[slot] = true }
+            startBeep()
+            mainHandler.postDelayed({
+                val next = _alerts.value.toMutableMap().apply { this[slot] = false }
+                _alerts.value = next
+                if (next.values.none { it }) stopBeep()
+            }, durationMs)
+        }
+    }
+
     private fun onVolumeChanged() {
         if (beeping) {
             // ToneGenerator 音量不可动态修改：停掉，按新音量重建，再继续警报节奏

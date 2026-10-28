@@ -11,6 +11,8 @@
     <attr name="pillBg" format="reference|color" />
     <!-- 胶囊选中态渐变（深色/浅色粉紫，科技蓝蓝青） -->
     <attr name="pillSelectedBg" format="reference|color" />
+    <!-- 深色顶栏上的胶囊背景（浅色主题也保持深色，保证白字可读；科技蓝为蓝色玻璃） -->
+    <attr name="barChipBg" format="reference|color" />
     <!-- 顶部/底部栏背景 -->
     <attr name="appBar" format="color" />
     <!-- 设备 chip / 设置项圆角背景 -->

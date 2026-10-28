@@ -511,6 +511,9 @@ class CameraSupervisor(
                 val r = manager.openCamera(slot, device)
                 if (r is UvcCameraManager.OpenResult.Failure) {
                     deviceProfileIdx.remove(profileKey)
+                    manualProfileRequests.remove(profileKey)?.let {
+                        _messages.tryEmit("${it.display} 切换失败：摄像头重新打开失败")
+                    }
                     markRetry(device.deviceId, now)
                     return
                 }
@@ -533,6 +536,15 @@ class CameraSupervisor(
             failCount.remove(device.deviceId)
             givenUp.remove(device.deviceId)
             Logger.i(TAG, "streaming slot=$slot profile=$used (idx=${deviceProfileIdx[profileKey]})")
+            manualProfileRequests.remove(profileKey)?.let { requested ->
+                _messages.tryEmit(
+                    if (used == requested) {
+                        "画面 ${slot + 1} 已切换为 ${requested.display}"
+                    } else {
+                        "${requested.display} 不可用（带宽/设备限制），已降为 ${used?.display ?: "低档位"}"
+                    }
+                )
+            }
             if ((deviceProfileIdx[profileKey] ?: 0) > startIdx) {
                 // 静默降档，只在日志记录：UI 上该路的分辨率/帧率标签已经是实际档位。
                 // 不弹“带宽不足”——USB2 Hub 下 1080p30+1080p30 的等时带宽确实可能不够，
@@ -548,6 +560,9 @@ class CameraSupervisor(
                 }
             }
         } else {
+            manualProfileRequests.remove(profileKey)?.let {
+                _messages.tryEmit("${it.display} 切换失败，正在重试/保持当前画面")
+            }
             if (idx >= caps.size) {
                 // 全部档位都失败：下一轮从期望档位重新尝试（环境可能变化）
                 deviceProfileIdx.remove(profileKey)
@@ -691,11 +706,17 @@ class CameraSupervisor(
         }
     }
 
+    /** 手动选档请求：用于切档过程/结果 Toast，避免用户点 30fps 后“没反应” */
+    private val manualProfileRequests =
+        java.util.concurrent.ConcurrentHashMap<String, StreamProfile>()
+
     /** 切换某路档位（仅能力范围内），持久化并重开 */
     fun setProfile(slot: Int, profile: StreamProfile) {
         val runtime = _slots.value[slot]
         val key = runtime.key ?: return
         val deviceId = runtime.device?.deviceId
+        manualProfileRequests[key] = profile
+        _messages.tryEmit("画面 ${slot + 1}：正在切换到 ${profile.display}…")
         scope.launch {
             reconcileLock.withLock {
                 val cfg = configs[key] ?: DeviceConfig(key = key)

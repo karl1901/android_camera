@@ -90,7 +90,12 @@
     <string name="dir_choose">选择目录</string>
     <string name="settings_layout">显示布局</string>
     <string name="layout_auto">自动（按摄像头数量）</string>
-    <string name="layout_single">单看某一路</string>
+    <string name="layout_single">单路显示</string>
+    <string name="layout_quad">四屏同显</string>
+    <string name="layout_triple">三屏同显</string>
+    <string name="layout_dual">双屏同显</string>
+    <string name="layout_menu_title">显示模式</string>
+    <string name="layout_menu_single_cameras">单路画面（四路均可切换）</string>
 
     <!-- 对话框标题 -->
     <string name="dialog_choose_camera_title">选择显示的摄像头</string>
@@ -110,6 +115,7 @@
     <!-- 录像回看页 -->
     <string name="playback_title">录像回看</string>
     <string name="playback_all_cells">全部画面</string>
+    <string name="playback_choose_cell">选择画面</string>
     <string name="playback_cell_n">画面 %1$d</string>
     <string name="playback_fullscreen">全屏</string>
     <string name="playback_no_content">此时间段没有视频内容</string>
@@ -118,3 +124,4 @@
     <string name="playback_map_title">行车轨迹</string>
     <string name="playback_map_hint">有 GPS 轨迹时随播放联动移动；离线时显示内置示意图，联网显示在线地图</string>
 </resources>
+

@@ -5,13 +5,23 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
 
+/** 总录像中的一路独立视频文件（新架构：每个画框单独 MP4）。 */
+data class MediaPart(
+    val name: String,
+    val file: File? = null,
+    val uri: Uri? = null,
+    val treeUri: String? = null
+)
+
 /**
  * 相册中的一条媒体（照片 / 分录像 / 总录像）。
  *
  * 文件名约定（本轮起）：
  * - 照片：P_<设备名>_yyyyMMdd_HHmmss_SSS.jpg
  * - 分录像：V_<设备名>_yyyyMMdd_HHmmss_宽x高.mp4
- * - 总录像：ALL_yyyyMMdd_HHmmss_宽x高.mp4
+ * - 总录像（新）：ALL_<yyyyMMdd_HHmmss>_c<slot>_<设备名>.mp4 多个；
+ *   同名组元数据 ALL_<yyyyMMdd_HHmmss>.json，预览图 ALL_<yyyyMMdd_HHmmss>_preview.jpg
+ * - 总录像（旧）：ALL_yyyyMMdd_HHmmss_宽x高.mp4 单个合成视频
  * 兼容旧版：BLIND_*.jpg（照片）、BLIND_*.avi（分录像）、BLIND_ALL_*.avi（总录像）。
  */
 data class GalleryMedia(
@@ -29,7 +39,14 @@ data class GalleryMedia(
     val timeMs: Long,
     val isVideo: Boolean,
     /** 视频时长（毫秒）；照片为 0，扫描时填充 */
-    val durationMs: Long = 0L
+    val durationMs: Long = 0L,
+    /** 总录像的新架构：每路一个 MP4；分录像/照片为空 */
+    val parts: List<MediaPart> = emptyList(),
+    /** 总录像组 key（ALL_yyyyMMdd_HHmmss）；旧录像/分录像为空 */
+    val groupKey: String? = null,
+    /** 总录像的“全画面同屏”预览图；分录像/旧录像为空 */
+    val previewFile: File? = null,
+    val previewUri: Uri? = null
 ) {
     enum class Kind { PHOTO, SINGLE, ALL }
 
@@ -76,6 +93,8 @@ data class GalleryMedia(
             val isVideoExt = lower.endsWith(".mp4") || lower.endsWith(".avi") ||
                 lower.endsWith(".mov") || lower.endsWith(".mkv")
             if (!isPhotoExt && !isVideoExt) return null
+            // 总录像的“全部画面同屏”预览图只是缩略图 sidecar，不作为单独照片展示
+            if (name.contains("_preview.", ignoreCase = true)) return null
             // 只展示本软件产出的文件，过滤自定义目录里用户的个人照片/视频
             if (!OWNED_REGEX.containsMatchIn(name)) return null
 

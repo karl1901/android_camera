@@ -19,18 +19,71 @@
         android:background="?attr/barBg"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:paddingStart="16dp"
-        android:paddingTop="8dp"
-        android:paddingEnd="12dp"
-        android:paddingBottom="8dp">
+        android:paddingStart="@dimen/ui_top_bar_pad_h"
+        android:paddingTop="@dimen/ui_top_bar_pad_v"
+        android:paddingEnd="@dimen/ui_top_bar_pad_h"
+        android:paddingBottom="@dimen/ui_top_bar_pad_v">
 
         <TextView
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="1"
             android:text="@string/app_title"
             android:textColor="#FFFFFF"
-            android:textSize="19sp" />
+            android:textSize="@dimen/ui_bar_title" />
+
+        <TextView
+            android:id="@+id/btnLayout"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/ui_tool_margin"
+            android:background="?attr/barChipBg"
+            android:clickable="true"
+            android:contentDescription="@string/btn_layout"
+            android:focusable="true"
+            android:gravity="center"
+            android:maxLines="1"
+            android:paddingStart="@dimen/ui_pill_pad_h"
+            android:paddingTop="@dimen/ui_pill_pad_v"
+            android:paddingEnd="@dimen/ui_pill_pad_h"
+            android:paddingBottom="@dimen/ui_pill_pad_v"
+            android:text="@string/layout_quad"
+            android:textColor="#FFFFFF"
+            android:textSize="@dimen/ui_pill_text" />
+
+        <ImageButton
+            android:id="@+id/btnFullscreen"
+            style="@style/BlindCam.ToolButton"
+            android:background="@drawable/bg_play_badge"
+            android:contentDescription="@string/btn_fullscreen"
+            android:tint="#FFFFFF"
+            android:src="@drawable/ic_fullscreen" />
+
+        <ImageButton
+            android:id="@+id/btnRecordAll"
+            style="@style/BlindCam.ToolButton"
+            android:background="@drawable/bg_play_badge"
+            android:contentDescription="@string/btn_record_all"
+            android:tint="#FFFFFF"
+            android:src="@drawable/ic_videocam" />
+
+        <ImageButton
+            android:id="@+id/btnGallery"
+            style="@style/BlindCam.ToolButton"
+            android:background="@drawable/bg_play_badge"
+            android:contentDescription="@string/btn_gallery"
+            android:tint="#FFFFFF"
+            android:src="@drawable/ic_gallery" />
+
+        <ImageButton
+            android:id="@+id/btnSettings"
+            style="@style/BlindCam.ToolButton"
+            android:background="@drawable/bg_play_badge"
+            android:contentDescription="@string/btn_settings"
+            android:tint="#FFFFFF"
+            android:src="@drawable/ic_settings" />
 
         <ImageButton
             android:id="@+id/btnGrant"
@@ -47,46 +100,6 @@
             android:contentDescription="@string/btn_refresh"
             android:tint="#FFFFFF"
             android:src="@drawable/ic_refresh" />
-
-        <ImageButton
-            android:id="@+id/btnLayout"
-            style="@style/BlindCam.ToolButton"
-            android:background="@drawable/bg_play_badge"
-            android:contentDescription="@string/btn_layout"
-            android:tint="#FFFFFF"
-            android:src="@drawable/ic_layout" />
-
-        <ImageButton
-            android:id="@+id/btnSettings"
-            style="@style/BlindCam.ToolButton"
-            android:background="@drawable/bg_play_badge"
-            android:contentDescription="@string/btn_settings"
-            android:tint="#FFFFFF"
-            android:src="@drawable/ic_settings" />
-
-        <ImageButton
-            android:id="@+id/btnGallery"
-            style="@style/BlindCam.ToolButton"
-            android:background="@drawable/bg_play_badge"
-            android:contentDescription="@string/btn_gallery"
-            android:tint="#FFFFFF"
-            android:src="@drawable/ic_gallery" />
-
-        <ImageButton
-            android:id="@+id/btnRecordAll"
-            style="@style/BlindCam.ToolButton"
-            android:background="@drawable/bg_play_badge"
-            android:contentDescription="@string/btn_record_all"
-            android:tint="#FFFFFF"
-            android:src="@drawable/ic_videocam" />
-
-        <ImageButton
-            android:id="@+id/btnFullscreen"
-            style="@style/BlindCam.ToolButton"
-            android:background="@drawable/bg_play_badge"
-            android:contentDescription="@string/btn_fullscreen"
-            android:tint="#FFFFFF"
-            android:src="@drawable/ic_fullscreen" />
     </LinearLayout>
 
     <!-- ============ 预览区（动态宫格） ============ -->
@@ -112,7 +125,7 @@
             android:gravity="center"
             android:text="@string/no_device"
             android:textColor="?attr/colorOnSurface"
-            android:textSize="17sp"
+            android:textSize="@dimen/ui_card_title"
             android:visibility="gone" />
     </FrameLayout>
 
@@ -129,10 +142,10 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:paddingStart="12dp"
-            android:paddingTop="8dp"
-            android:paddingEnd="12dp"
-            android:paddingBottom="8dp" />
+            android:paddingStart="@dimen/ui_page_pad_h"
+            android:paddingTop="@dimen/ui_top_bar_pad_v"
+            android:paddingEnd="@dimen/ui_page_pad_h"
+            android:paddingBottom="@dimen/ui_top_bar_pad_v" />
     </HorizontalScrollView>
 
 </LinearLayout>

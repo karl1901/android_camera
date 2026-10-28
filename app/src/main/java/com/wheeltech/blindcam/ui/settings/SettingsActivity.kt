@@ -14,7 +14,6 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
@@ -22,6 +21,8 @@ import com.wheeltech.blindcam.UvcApp
 import com.wheeltech.blindcam.data.AppSettings
 import com.wheeltech.blindcam.databinding.ActivitySettingsBinding
 import com.wheeltech.blindcam.domain.CameraSupervisor
+import com.wheeltech.blindcam.domain.DevicePerformance
+import com.wheeltech.blindcam.ui.common.ThemedActivity
 import com.wheeltech.blindcam.ui.main.MainViewModel
 import com.wheeltech.blindcam.util.Logger
 import com.google.android.material.snackbar.Snackbar
@@ -34,18 +35,29 @@ import kotlinx.coroutines.launch
  * 录像叠加(OSD) / 码率与画质 / 循环录像 / GPS 轨迹 / 日志与排查。
  * 所有改动即时保存；目录显示完整路径；主题切换重建生效。
  */
-class SettingsActivity : AppCompatActivity() {
+class SettingsActivity : ThemedActivity() {
 
     private lateinit var binding: ActivitySettingsBinding
     private lateinit var viewModel: MainViewModel
     private val app: UvcApp get() = application as UvcApp
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        val app = application as UvcApp
-        setTheme(app.themeResId(app.currentThemeMode))
         super.onCreate(savedInstanceState)
         binding = ActivitySettingsBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        // 平板/宽车机上限制内容宽度并居中，避免一张卡片横向拉满、字号显得突兀
+        runCatching {
+            val dm = resources.displayMetrics
+            val pagePad = resources.getDimensionPixelSize(com.wheeltech.blindcam.R.dimen.ui_page_pad_h)
+            val maxW = (960f * dm.density).toInt()
+            val available = (com.wheeltech.blindcam.domain.DevicePerformance.screenWidthPx - pagePad * 2)
+                .coerceAtLeast((320f * dm.density).toInt())
+            val lp = binding.cardContainer.layoutParams as android.widget.FrameLayout.LayoutParams
+            lp.width = minOf(available, maxW)
+            lp.gravity = Gravity.CENTER_HORIZONTAL
+            binding.cardContainer.layoutParams = lp
+        }
 
         viewModel = ViewModelProvider(
             this,
@@ -54,6 +66,11 @@ class SettingsActivity : AppCompatActivity() {
 
         binding.btnBack.setOnClickListener { finish() }
         buildContent()
+    }
+
+    override fun onResume() {
+        if (recreateIfThemeChanged()) return
+        super.onResume()
     }
 
     private fun buildContent() {
@@ -83,18 +100,28 @@ class SettingsActivity : AppCompatActivity() {
                     }
                 )
                 c.addView(label("显示布局"))
-                c.addView(
-                    segments(
-                        listOf(
-                            getString(com.wheeltech.blindcam.R.string.layout_auto),
-                            getString(com.wheeltech.blindcam.R.string.layout_single)
-                        ), s.layoutMode.ordinal
-                    ) { i ->
-                        lifecycleScope.launch {
-                            app.settingsRepository.setLayoutMode(AppSettings.LayoutMode.entries[i])
+                val connected = viewModel.slots.value.count {
+                    it.state != CameraSupervisor.SlotState.EMPTY
+                }
+                val layoutModes = com.wheeltech.blindcam.domain.DisplayLayout.availableModes(connected)
+                if (layoutModes.isEmpty()) {
+                    c.addView(label("未接入摄像头，接入后可按路数选择四屏/三屏/双屏/单路"))
+                } else {
+                    val effective = com.wheeltech.blindcam.domain.DisplayLayout.effectiveMode(s.layoutMode, connected)
+                    c.addView(label("当前接入 $connected 路，仅显示可用布局"))
+                    c.addView(
+                        segments(
+                            layoutModes.map { layoutLabel(it) },
+                            layoutModes.indexOf(effective).coerceAtLeast(0)
+                        ) { i ->
+                            val mode = layoutModes[i]
+                            viewModel.setDisplayMode(
+                                mode,
+                                if (mode == AppSettings.LayoutMode.SINGLE) s.focusSlot else null
+                            )
                         }
-                    }
-                )
+                    )
+                }
                 c.addView(label("开机与后台"))
                 c.addView(switchRow("开机自动启动本应用", s.bootAutoStart) { checked ->
                     viewModel.setBootAutoStart(checked)
@@ -132,7 +159,7 @@ class SettingsActivity : AppCompatActivity() {
                 } else {
                     val tabRow = LinearLayout(this@SettingsActivity).apply {
                         orientation = LinearLayout.HORIZONTAL
-                        setPadding(0, dp(2), 0, dp(6))
+                        setPadding(0, dp(2), 0, dp(8))
                     }
                     val tabs = ArrayList<TextView>()
                     val detail = LinearLayout(this@SettingsActivity).apply { orientation = LinearLayout.VERTICAL }
@@ -169,25 +196,27 @@ class SettingsActivity : AppCompatActivity() {
                         val tab = TextView(this@SettingsActivity).apply {
                             text = name
                             tag = rt.slot
-                            textSize = 13f
+                            textSize = sp(13f)
                             gravity = Gravity.CENTER
-                            minWidth = dp(90)
-                            setPadding(dp(18), dp(9), dp(18), dp(9))
+                            maxLines = 1
+                            ellipsize = android.text.TextUtils.TruncateAt.END
+                            setPadding(dp(8), 0, dp(8), 0)
                             isClickable = true
                             setOnClickListener { select(rt.slot) }
                         }
-                        val lp = LinearLayout.LayoutParams(
-                            LinearLayout.LayoutParams.WRAP_CONTENT,
-                            LinearLayout.LayoutParams.WRAP_CONTENT
-                        ).apply { marginEnd = dp(8) }
+                        // 与相册“照片/分录像/总录像”一致：等宽分段标签，而不是小胶囊挤在左边
+                        val lp = LinearLayout.LayoutParams(0, dp(40), 1f).apply {
+                            if (rt != live.last()) marginEnd = dp(6)
+                        }
                         tabRow.addView(tab, lp)
                         tabs.add(tab)
                     }
                     c.addView(
-                        android.widget.HorizontalScrollView(this@SettingsActivity).apply {
-                            isHorizontalScrollBarEnabled = false
-                            addView(tabRow)
-                        }
+                        tabRow,
+                        LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT
+                        )
                     )
                     c.addView(detail)
                     select(live.first().slot)
@@ -318,6 +347,11 @@ class SettingsActivity : AppCompatActivity() {
         c.addView(switchRow("开启盲区预警", rt.config?.warn == true) {
             viewModel.setWarn(rt.slot, it)
         })
+        c.addView(label("触发时画面会显示红色脉冲光晕/四角警示和蜂鸣；可先测试确认效果"))
+        c.addView(pillButton("测试红框 / 蜂鸣", true) {
+            app.warningManager.testAlert(rt.slot, 4_000)
+            toast("已触发 4 秒测试预警，返回首页查看红框效果")
+        })
     }
 
     // ------------------------------------------------------------------
@@ -338,7 +372,7 @@ class SettingsActivity : AppCompatActivity() {
         card.addView(TextView(this).apply {
             text = title
             setTextColor(themeColor(com.google.android.material.R.attr.colorOnSurface))
-            textSize = 17f
+            textSize = sp(17f)
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             setPadding(0, 0, 0, dp(8))
         })
@@ -351,21 +385,21 @@ class SettingsActivity : AppCompatActivity() {
     private fun sectionTitle(text: String) = TextView(this).apply {
         this.text = text
         setTextColor(themeColor(com.wheeltech.blindcam.R.attr.accentColor))
-        textSize = 14f
+        textSize = sp(14f)
         setPadding(0, dp(12), 0, dp(2))
     }
 
     private fun label(text: String) = TextView(this).apply {
         this.text = text
         setTextColor(themeColor(com.wheeltech.blindcam.R.attr.onSurfaceDim))
-        textSize = 13f
+        textSize = sp(13f)
         setPadding(0, dp(10), 0, dp(4))
     }
 
     private fun linkRow(text: String, onClick: () -> Unit) = TextView(this).apply {
         this.text = text
         setTextColor(themeColor(com.wheeltech.blindcam.R.attr.onSurfaceDim))
-        textSize = 12f
+        textSize = sp(12f)
         gravity = Gravity.END
         setPadding(0, dp(2), dp(4), dp(6))
         isClickable = true
@@ -375,7 +409,7 @@ class SettingsActivity : AppCompatActivity() {
     private fun pathRow(path: String, onClick: () -> Unit) = TextView(this).apply {
         text = "📁  $path\n点击可更改"
         setTextColor(themeColor(com.google.android.material.R.attr.colorOnSurface))
-        textSize = 12f
+        textSize = sp(12f)
         typeface = Typeface.MONOSPACE
         background = themeDrawable(com.wheeltech.blindcam.R.attr.pillBg)
             ?: ContextCompat.getDrawable(this@SettingsActivity, com.wheeltech.blindcam.R.drawable.bg_pill)
@@ -389,7 +423,7 @@ class SettingsActivity : AppCompatActivity() {
         setText(current)
         setTextColor(themeColor(com.google.android.material.R.attr.colorOnSurface))
         setHintTextColor(themeColor(com.wheeltech.blindcam.R.attr.onSurfaceDim))
-        textSize = 14f
+        textSize = sp(14f)
         setSingleLine(true)
         background = themeDrawable(com.wheeltech.blindcam.R.attr.pillBg)
             ?: ContextCompat.getDrawable(this@SettingsActivity, com.wheeltech.blindcam.R.drawable.bg_pill)
@@ -409,20 +443,20 @@ class SettingsActivity : AppCompatActivity() {
         val tv = TextView(this).apply {
             text = labelText
             setTextColor(themeColor(com.google.android.material.R.attr.colorOnSurface))
-            textSize = 14f
+            textSize = sp(14f)
             layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         }
         val toggle = TextView(this).apply {
             text = if (checked) "●" else "○"
-            textSize = 22f
-            setTextColor(if (checked) 0xFFFF6FB5.toInt() else 0xFF8A8499.toInt())
+            textSize = sp(22f)
+            setTextColor(if (checked) themeColor(com.wheeltech.blindcam.R.attr.accentColor) else themeColor(com.wheeltech.blindcam.R.attr.onSurfaceDim))
             setPadding(dp(12), 0, 0, 0)
         }
         var state = checked
         row.setOnClickListener {
             state = !state
             toggle.text = if (state) "●" else "○"
-            toggle.setTextColor(if (state) 0xFFFF6FB5.toInt() else 0xFF8A8499.toInt())
+            toggle.setTextColor(if (state) themeColor(com.wheeltech.blindcam.R.attr.accentColor) else themeColor(com.wheeltech.blindcam.R.attr.onSurfaceDim))
             onChange(state)
         }
         row.addView(tv); row.addView(toggle)
@@ -460,7 +494,7 @@ class SettingsActivity : AppCompatActivity() {
         labels.forEachIndexed { i, lab ->
             val tv = TextView(this).apply {
                 text = lab
-                textSize = 13f
+                textSize = sp(13f)
                 gravity = Gravity.CENTER
                 setPadding(dp(10), dp(9), dp(10), dp(9))
                 isClickable = true
@@ -479,7 +513,7 @@ class SettingsActivity : AppCompatActivity() {
         this.text = text
         gravity = Gravity.CENTER
         setTextColor(Color.WHITE)
-        textSize = 14f
+        textSize = sp(14f)
         setPadding(dp(16), dp(12), dp(16), dp(12))
         setBackground(
             if (gradient) {
@@ -500,7 +534,18 @@ class SettingsActivity : AppCompatActivity() {
         setOnClickListener { onClick() }
     }
 
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+    private val uiScale: Float get() = DevicePerformance.uiScale()
+
+    private fun layoutLabel(mode: AppSettings.LayoutMode): String = when (mode) {
+        AppSettings.LayoutMode.AUTO -> getString(com.wheeltech.blindcam.R.string.layout_quad)
+        AppSettings.LayoutMode.TRIPLE -> getString(com.wheeltech.blindcam.R.string.layout_triple)
+        AppSettings.LayoutMode.DUAL -> getString(com.wheeltech.blindcam.R.string.layout_dual)
+        AppSettings.LayoutMode.SINGLE -> getString(com.wheeltech.blindcam.R.string.layout_single)
+    }
+
+    private fun sp(v: Float): Float = v * uiScale
+
+    private fun dp(v: Int): Int = (v * uiScale * resources.displayMetrics.density).toInt()
 
     /** 解析当前主题的颜色属性（浅色/深色/科技蓝自适应） */
     private fun themeColor(attr: Int): Int {
@@ -569,4 +614,9 @@ class SettingsActivity : AppCompatActivity() {
         Snackbar.make(binding.root, m, Snackbar.LENGTH_SHORT).show()
     }
 }
+
+
+
+
+
 

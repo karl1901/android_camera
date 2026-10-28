@@ -5,14 +5,14 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.View
 import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
 import com.wheeltech.blindcam.UvcApp
 import com.wheeltech.blindcam.R
 import com.wheeltech.blindcam.databinding.ActivityGalleryBinding
 import com.wheeltech.blindcam.recorder.GalleryMedia
-import com.wheeltech.blindcam.ui.common.DropdownMenuPopup
+import com.wheeltech.blindcam.ui.common.GlassMenuPopup
+import com.wheeltech.blindcam.ui.common.ThemedActivity
 import com.wheeltech.blindcam.ui.playback.PlaybackActivity
 import com.wheeltech.blindcam.ui.viewer.PhotoViewerActivity
 import com.wheeltech.blindcam.ui.viewer.VideoPlayerActivity
@@ -37,7 +37,7 @@ private fun dateKeyOf(ms: Long): String =
  * - 卡片首击即打开（照片→内置看图器；视频→内置播放器）
  * - 长按进入多选：卡片右上角勾选、点任意处勾选；顶栏全选/选择项目/X；底栏删除；删除后实时刷新
  */
-class GalleryActivity : AppCompatActivity() {
+class GalleryActivity : ThemedActivity() {
 
     private enum class Tab { PHOTOS, SPLIT, TOTAL }
 
@@ -63,8 +63,6 @@ class GalleryActivity : AppCompatActivity() {
     private val selectedKeys: MutableSet<String> = Collections.synchronizedSet(LinkedHashSet())
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        val appTheme = application as UvcApp
-        setTheme(appTheme.themeResId(appTheme.currentThemeMode))
         super.onCreate(savedInstanceState)
         binding = ActivityGalleryBinding.inflate(layoutInflater)
         setContentView(binding.root)
@@ -262,7 +260,12 @@ class GalleryActivity : AppCompatActivity() {
         val options = mutableListOf(getString(R.string.gallery_filter_device_all))
         options.addAll(names)
         val selected = deviceFilter?.let { names.indexOf(it) + 1 } ?: 0
-        DropdownMenuPopup(this, options, selected) { idx ->
+        GlassMenuPopup(
+            this,
+            options.mapIndexed { i, text ->
+                GlassMenuPopup.Entry.Item(text, selected = i == selected)
+            }
+        ) { idx ->
             deviceFilter = if (idx == 0) null else names[idx - 1]
             binding.btnDevice.text = deviceFilter ?: getString(R.string.gallery_filter_device)
             applyFilter()
@@ -281,7 +284,12 @@ class GalleryActivity : AppCompatActivity() {
             dateFilter == dateKeyOf(System.currentTimeMillis()) -> 1
             else -> 2
         }
-        DropdownMenuPopup(this, options, selected) { idx ->
+        GlassMenuPopup(
+            this,
+            options.mapIndexed { i, text ->
+                GlassMenuPopup.Entry.Item(text, selected = i == selected)
+            }
+        ) { idx ->
             when (idx) {
                 0 -> { dateFilter = null; binding.btnDate.setText(R.string.gallery_filter_date_all); applyFilter() }
                 1 -> {
@@ -456,6 +464,7 @@ class GalleryActivity : AppCompatActivity() {
     }
 
     override fun onResume() {
+        if (recreateIfThemeChanged()) return
         super.onResume()
         // 从查看器/播放器/回看返回时刷新当前 Tab（期间可能有新文件）；其他 Tab 用缓存
         if (!loading) refreshTab(tab)

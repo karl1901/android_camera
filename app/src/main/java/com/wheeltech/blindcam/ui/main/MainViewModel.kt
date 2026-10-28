@@ -6,10 +6,11 @@ import androidx.lifecycle.viewModelScope
 import com.wheeltech.blindcam.UvcApp
 import com.wheeltech.blindcam.data.AppSettings
 import com.wheeltech.blindcam.domain.CameraSupervisor
+import com.wheeltech.blindcam.domain.DisplayLayout
 import com.wheeltech.blindcam.domain.StreamProfile
 import com.wheeltech.blindcam.domain.UvcCameraManager
 import com.wheeltech.blindcam.recorder.BitrateAdvisor
-import com.wheeltech.blindcam.recorder.CompositeRecorder
+import com.wheeltech.blindcam.recorder.TotalRecorder
 import com.wheeltech.blindcam.recorder.OsdRenderer
 import com.wheeltech.blindcam.usb.UsbDeviceInfo
 import com.wheeltech.blindcam.util.Logger
@@ -41,10 +42,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** 各槽位运行状态（来自常驻状态机） */
     val slots: StateFlow<List<CameraSupervisor.SlotRuntime>> = supervisor.slots
 
+    /** DataStore 的初始值是默认 AppSettings，真实设置到达前不能拿它判断用户选择 */
+    private var settingsReady = false
+    private var pendingAutoLayoutCount: Int? = null
+
     /** 全局设置 */
     val settings: StateFlow<AppSettings> = MutableStateFlow(AppSettings()).also { sf ->
         viewModelScope.launch {
-            settingsRepository.settings.collect { sf.value = it }
+            settingsRepository.settings.collect {
+                sf.value = it
+                settingsReady = true
+                // 摄像头先到、设置在 DataStore 后到：等真实设置加载后补一次热插拔自动布局
+                pendingAutoLayoutCount?.let { count ->
+                    pendingAutoLayoutCount = null
+                    lastAutoLayoutCount = -1
+                    syncLayoutForConnected(count)
+                }
+            }
         }
     }
 
@@ -163,6 +177,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ------------------------------------------------------------------
     // 布局
     // ------------------------------------------------------------------
+
+    /**
+     * 最近一次自动布局对应的摄像头路数。
+     * 只在“热插拔导致路数变化”时自动切到 N 屏；用户手动选单路后，
+     * 只要路数没变就不再覆盖（主题重建时 ViewModel 还在，也不会重置）。
+     */
+    private var lastAutoLayoutCount = -1
+
+    /**
+     * 摄像头热插拔智能布局：接入 1/2/3/4 路分别自动切单/双/三/四屏。
+     * 路数没变时不动，避免覆盖用户手动选择。
+     */
+    fun syncLayoutForConnected(count: Int) {
+        if (!settingsReady) {
+            // 等设置真正加载后再应用，避免启动瞬间被默认 AUTO 误导
+            pendingAutoLayoutCount = count
+            return
+        }
+        if (count == lastAutoLayoutCount) return
+        lastAutoLayoutCount = count
+        val target = DisplayLayout.modeForConnected(count) ?: return
+        if (settings.value.layoutMode != target) {
+            viewModelScope.launch { settingsRepository.setLayoutMode(target) }
+        }
+    }
+
     fun cycleLayout() {
         viewModelScope.launch {
             val cur = settings.value
@@ -183,6 +223,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setLayoutMode(mode: AppSettings.LayoutMode) {
         viewModelScope.launch { settingsRepository.setLayoutMode(mode) }
+    }
+
+    /** 单路显示：同时持久化布局模式与要看的槽位 */
+    fun setDisplayMode(mode: AppSettings.LayoutMode, focusSlot: Int? = null) {
+        viewModelScope.launch {
+            settingsRepository.setLayoutMode(mode)
+            focusSlot?.let { settingsRepository.setFocusSlot(it) }
+        }
+    }
+
+    fun setFocusSlot(slot: Int) {
+        viewModelScope.launch { settingsRepository.setFocusSlot(slot.coerceAtLeast(0)) }
     }
 
     // ------------------------------------------------------------------
@@ -280,33 +332,50 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             val s = settingsRepository.settings.first()
-            val streaming = slots.value.filter {
-                it.state == CameraSupervisor.SlotState.STREAMING && it.key != null
+            // 总录像 = 当前界面实际显示的画框，而不是“所有已接入摄像头”。
+            // 四屏/三屏/双屏/单路各自独立 MP4，回看切换直接播该文件。
+            val occupied = slots.value
+                .filter { it.state != CameraSupervisor.SlotState.EMPTY }
+                .map { it.slot }
+            val visible = com.wheeltech.blindcam.domain.DisplayLayout.visibleSlots(
+                s.layoutMode, occupied, s.focusSlot
+            )
+            val streaming = visible.mapNotNull { slot ->
+                slots.value.getOrNull(slot)?.takeIf {
+                    it.state == CameraSupervisor.SlotState.STREAMING && it.key != null &&
+                        it.activeProfile != null
+                }
             }
             if (streaming.isEmpty()) {
                 emit("暂无画面，无法总录像")
                 return@launch
             }
-            val cells = streaming.map { rt ->
+            val cells = streaming.mapNotNull { rt ->
+                val p = rt.activeProfile ?: return@mapNotNull null
                 val name = rt.config?.name?.takeIf { it.isNotBlank() }
                     ?: rt.device?.productName?.takeIf { it.isNotBlank() }
                     ?: "摄像头 ${rt.slot + 1}"
-                CompositeRecorder.Cell(
-                    rt.slot, name,
-                    rt.config?.mirror ?: false, rt.config?.rotation ?: 0,
-                    rt.config?.denoise ?: 0
+                TotalRecorder.Cell(
+                    slot = rt.slot,
+                    name = name,
+                    mirror = rt.config?.mirror ?: false,
+                    rotation = rt.config?.rotation ?: 0,
+                    denoiseLevel = rt.config?.denoise ?: 0,
+                    srcWidth = p.width,
+                    srcHeight = p.height,
+                    fps = p.fps
                 )
             }
-            val compositeBitrate = BitrateAdvisor.compositeBitrate(cells.size, s.compositeBitrateQuality)
             val ok = captureManager.startComposite(
                 cells, s.osdName, s.osdClock, s.videoDirUri,
-                bitrate = compositeBitrate,
+                bitrate = 0,
                 loopEnabled = s.loopEnabled,
                 segmentMinutes = s.loopSegmentMinutes,
                 keepFreeMb = s.loopKeepFreeMb
             )
             if (ok) {
                 _compositeRecording.value = true
+                emit("总录像开始：${cells.size} 路独立录制（${cells.joinToString { it.name }}）")
                 // 总录像开始：按开关启动 GPS 轨迹记录（与总录像同名的 .csv 轨迹文件）
                 if (s.gpsEnabled) appContainer.gpsTracker.start(s.videoDirUri)
             } else emit("总录像启动失败")
@@ -317,3 +386,4 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _events.tryEmit(msg)
     }
 }
+

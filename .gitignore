@@ -36,3 +36,4 @@ google-services.json
 
 # Native 第三方源码（由 scripts/setup-native.sh 拉取，不入库）
 /app/src/main/cpp/third_party/
+screenshots

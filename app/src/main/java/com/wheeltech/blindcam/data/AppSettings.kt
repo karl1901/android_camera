@@ -5,7 +5,7 @@ package com.wheeltech.blindcam.data
  * 单摄像头相关设置（名称/镜像/旋转/档位/顺序）见 [DeviceConfig]。
  */
 data class AppSettings(
-    /** 布局模式：AUTO=按摄像头数量自动 1/2/3/4 宫格；SINGLE=只看 [focusSlot] 这一路 */
+    /** 布局模式：AUTO=四屏同显（按接入数量最多 4 路）；TRIPLE/DUAL/SINGLE=三屏/双屏/单路 */
     val layoutMode: LayoutMode = LayoutMode.AUTO,
     /** SINGLE 模式下要单看的槽位序号 */
     val focusSlot: Int = 0,
@@ -46,7 +46,11 @@ data class AppSettings(
     /** 总录像时记录 GPS 轨迹（需定位权限，车机无 GPS 时自动跳过） */
     val gpsEnabled: Boolean = false
 ) {
-    enum class LayoutMode { AUTO, SINGLE }
+    /**
+     * 显示布局。ordinal 已持久化，新增项只能加在末尾：
+     * 0=AUTO（四屏同显）、1=SINGLE（单路，兼容老数据）、2=TRIPLE、3=DUAL。
+     */
+    enum class LayoutMode { AUTO, SINGLE, TRIPLE, DUAL }
 
     /**
      * 主题：跟随系统 / 深色 / 浅色 / 深色+蓝色科技风。

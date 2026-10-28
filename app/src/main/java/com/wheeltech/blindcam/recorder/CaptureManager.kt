@@ -87,8 +87,8 @@ class CaptureManager(
     /** 进行中的录像 */
     private val recordings = ConcurrentHashMap<Int, RecState>()
 
-    /** 总录像（多路合成） */
-    private val composite = CompositeRecorder(mediaSaver)
+    /** 总录像（新架构：当前显示画框分别独立录制） */
+    private val total = TotalRecorder(mediaSaver)
 
     /** 每槽位待写帧计数（背压：超过阈值丢帧，避免无限堆积 OOM） */
     private val pendingWrites = ConcurrentHashMap<Int, AtomicInteger>()
@@ -204,7 +204,7 @@ class CaptureManager(
     // 总录像（多路合成）
     // ------------------------------------------------------------------
     fun startComposite(
-        cells: List<CompositeRecorder.Cell>,
+        cells: List<TotalRecorder.Cell>,
         osdName: Boolean,
         osdClock: Boolean,
         videoDirUri: String,
@@ -212,26 +212,23 @@ class CaptureManager(
         loopEnabled: Boolean = false,
         segmentMinutes: Int = 3,
         keepFreeMb: Int = 1024
-    ): Boolean = composite.start(
-        cells, osdName, osdClock, videoDirUri,
-        bitrate, loopEnabled, segmentMinutes, keepFreeMb
-    )
+    ): Boolean = total.start(cells, osdName, osdClock, videoDirUri)
 
-    fun stopComposite(cb: (Result<String>) -> Unit) = composite.stop(cb)
+    fun stopComposite(cb: (Result<String>) -> Unit) = total.stop(cb)
 
-    fun isCompositeRecording(): Boolean = composite.isRunning
+    fun isCompositeRecording(): Boolean = total.isRunning
 
     /** 总录像正在收尾落盘（此时用户再次点击应忽略，而不是报“启动失败”） */
-    fun isCompositeStopping(): Boolean = composite.isStopping
+    fun isCompositeStopping(): Boolean = total.isStopping
 
     override fun onFrame(frame: CameraFrame) {
         val slot = frame.cameraId
         // 总录像：录制中始终转发最新帧（内部会拷贝）
-        if (composite.isRunning) composite.onFrame(slot, frame.data)
+        if (total.isRunning) total.onFrame(frame);
 
         val photoReq = pendingPhotos.remove(slot)
         val rec = recordings[slot]
-        if (photoReq == null && rec == null && !composite.isRunning) return
+        if (photoReq == null && rec == null && !total.isRunning) return
 
         // 帧到达真实时间（在 native 回调线程取，单调），随任务投递给 IO 线程，保证录像时间戳真实
         val arriveNs = SystemClock.elapsedRealtimeNanos()
@@ -296,9 +293,10 @@ class CaptureManager(
             runCatching { state.denoiser.release() }
         }
         recordings.clear()
-        runCatching { composite.shutdown() }
+        runCatching { total.shutdown() }
         ioThreads.values.forEach { it.quitSafely() }
         ioThreads.clear()
         ioHandlers.clear()
     }
 }
+

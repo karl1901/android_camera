@@ -23,6 +23,7 @@
         <item name="barBg">@drawable/bg_glass_bar</item>
         <item name="pillBg">@drawable/bg_pill</item>
         <item name="pillSelectedBg">@drawable/bg_pill_gradient</item>
+        <item name="barChipBg">@drawable/bg_pill</item>
         <item name="appBar">#FF10141A</item>
         <item name="chipBg">#FF1E2A3A</item>
         <item name="onSurfaceDim">#FF9AA4B2</item>

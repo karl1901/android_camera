@@ -14,10 +14,10 @@ import android.view.WindowManager
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.widget.SeekBar
-import androidx.appcompat.app.AppCompatActivity
 import com.wheeltech.blindcam.R
 import com.wheeltech.blindcam.UvcApp
 import com.wheeltech.blindcam.databinding.ActivityVideoPlayerBinding
+import com.wheeltech.blindcam.ui.common.ThemedActivity
 import com.wheeltech.blindcam.util.Logger
 import java.util.Locale
 
@@ -29,7 +29,7 @@ import java.util.Locale
  *
  * 后期回看页/时间轴可直接复用同样的控件与自动收起交互。
  */
-class VideoPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListener {
+class VideoPlayerActivity : ThemedActivity(), TextureView.SurfaceTextureListener {
 
     private lateinit var binding: ActivityVideoPlayerBinding
     private val uiHandler = Handler(Looper.getMainLooper())
@@ -89,8 +89,6 @@ class VideoPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
     private fun isPlayingNow(): Boolean = runCatching { player?.isPlaying == true }.getOrDefault(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        val appTheme = application as UvcApp
-        setTheme(appTheme.themeResId(appTheme.currentThemeMode))
         super.onCreate(savedInstanceState)
         window.setFlags(
             WindowManager.LayoutParams.FLAG_FULLSCREEN,
@@ -332,6 +330,11 @@ class VideoPlayerActivity : AppCompatActivity(), TextureView.SurfaceTextureListe
     }
 
     override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {}
+
+    override fun onResume() {
+        if (recreateIfThemeChanged()) return
+        super.onResume()
+    }
 
     override fun onPause() {
         // 退到后台/锁屏时暂停，避免继续解码耗电、被系统回收

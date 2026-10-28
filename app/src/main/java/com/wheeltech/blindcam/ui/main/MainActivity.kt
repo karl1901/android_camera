@@ -22,7 +22,6 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
-import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -38,11 +37,14 @@ import com.wheeltech.blindcam.data.AppSettings
 import com.wheeltech.blindcam.databinding.ActivityMainBinding
 import com.wheeltech.blindcam.databinding.ItemCameraPanelBinding
 import com.wheeltech.blindcam.domain.CameraSupervisor
+import com.wheeltech.blindcam.domain.DevicePerformance
 import com.wheeltech.blindcam.domain.StreamProfile
 import com.wheeltech.blindcam.domain.UvcCameraManager
 import com.wheeltech.blindcam.render.PreviewController
 import com.wheeltech.blindcam.render.PreviewRenderer
 import com.wheeltech.blindcam.service.UvcForegroundService
+import com.wheeltech.blindcam.ui.common.GlassMenuPopup
+import com.wheeltech.blindcam.ui.common.ThemedActivity
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -50,7 +52,7 @@ import kotlinx.coroutines.launch
  * 主界面：动态 1/2/3/4 宫格预览。
  * 多路取流/授权/热插拔由常驻 [CameraSupervisor] 负责，本类只负责渲染与交互。
  */
-class MainActivity : AppCompatActivity() {
+class MainActivity : ThemedActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var viewModel: MainViewModel
@@ -181,9 +183,6 @@ class MainActivity : AppCompatActivity() {
     private val app: UvcApp get() = application as UvcApp
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // 按用户选择的主题（浅色/深色/跟随系统/科技蓝）固定主题，需在 super 与 setContentView 之前
-        val app = application as UvcApp
-        setTheme(app.themeResId(app.currentThemeMode))
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
@@ -276,7 +275,7 @@ class MainActivity : AppCompatActivity() {
     private fun setupButtons() {
         binding.btnGrant.setOnClickListener { ensureCameraThen { viewModel.grantAllManual() } }
         binding.btnRefresh.setOnClickListener { viewModel.refresh() }
-        binding.btnLayout.setOnClickListener { viewModel.cycleLayout() }
+        binding.btnLayout.setOnClickListener { showDisplayMenu() }
         binding.btnSettings.setOnClickListener {
             startActivity(android.content.Intent(this, com.wheeltech.blindcam.ui.settings.SettingsActivity::class.java))
         }
@@ -312,15 +311,17 @@ class MainActivity : AppCompatActivity() {
         val occupied = viewModel.slots.value
             .filter { it.state != CameraSupervisor.SlotState.EMPTY }
             .map { it.slot }
-        return if (s.layoutMode == AppSettings.LayoutMode.SINGLE) {
-            val focus = s.focusSlot
-            if (focus in occupied) listOf(focus) else occupied.take(1)
-        } else {
-            occupied
-        }
+        return com.wheeltech.blindcam.domain.DisplayLayout.visibleSlots(
+            s.layoutMode, occupied, s.focusSlot
+        )
     }
 
     private fun renderAll() {
+        // 热插拔：插入几路自动几屏，拔掉后自动降到剩余路数对应的宫格
+        val connectedCount = viewModel.slots.value.count {
+            it.state != CameraSupervisor.SlotState.EMPTY
+        }
+        viewModel.syncLayoutForConnected(connectedCount)
         val visible = visibleSlots()
         applyGrid(visible)
         for (panel in panels) {
@@ -328,7 +329,100 @@ class MainActivity : AppCompatActivity() {
         }
         binding.tvEmpty.visibility =
             if (visible.isEmpty()) View.VISIBLE else View.GONE
+        updateLayoutButton()
+        updateTopBarVisibility()
         renderDeviceChips()
+    }
+
+    private fun layoutLabel(mode: AppSettings.LayoutMode): String = when (mode) {
+        AppSettings.LayoutMode.AUTO -> getString(R.string.layout_quad)
+        AppSettings.LayoutMode.TRIPLE -> getString(R.string.layout_triple)
+        AppSettings.LayoutMode.DUAL -> getString(R.string.layout_dual)
+        AppSettings.LayoutMode.SINGLE -> getString(R.string.layout_single)
+    }
+
+    private fun updateLayoutButton() {
+        val occupied = viewModel.slots.value.count {
+            it.state != CameraSupervisor.SlotState.EMPTY
+        }
+        val mode = com.wheeltech.blindcam.domain.DisplayLayout.effectiveMode(
+            viewModel.settings.value.layoutMode, occupied
+        )
+        binding.btnLayout.text = "${layoutLabel(mode)}  ▾"
+    }
+
+    /** 无摄像头时隐藏显示模式/总录像/全屏，避免点了没有对象 */
+    private fun updateTopBarVisibility() {
+        val occupied = viewModel.slots.value.count {
+            it.state != CameraSupervisor.SlotState.EMPTY
+        }
+        val hasCamera = occupied > 0
+        binding.btnLayout.visibility = if (hasCamera) View.VISIBLE else View.GONE
+        binding.btnRecordAll.visibility = if (hasCamera) View.VISIBLE else View.GONE
+        binding.btnFullscreen.visibility = if (hasCamera) View.VISIBLE else View.GONE
+        binding.barBottom.visibility =
+            if (viewModel.devices.value.isEmpty()) View.GONE else View.VISIBLE
+    }
+
+    /**
+     * 显示模式下拉：只列出当前接入路数支持的选项。
+     * 1 路：单路；2 路：双屏/单路；3 路：三屏/双屏/单路；4 路：四屏/三屏/双屏/单路。
+     */
+    private fun showDisplayMenu() {
+        val s = viewModel.settings.value
+        val occupied = viewModel.slots.value.filter {
+            it.state != CameraSupervisor.SlotState.EMPTY
+        }
+        if (occupied.isEmpty()) {
+            toast("未接入摄像头")
+            return
+        }
+        val modes = com.wheeltech.blindcam.domain.DisplayLayout.availableModes(occupied.size)
+        val effective = com.wheeltech.blindcam.domain.DisplayLayout.effectiveMode(
+            s.layoutMode, occupied.size
+        )
+        val entries = ArrayList<GlassMenuPopup.Entry>()
+        val actions = ArrayList<() -> Unit>()
+        entries.add(GlassMenuPopup.Entry.Header(getString(R.string.layout_menu_title)))
+        actions.add {}
+        val focus = if (s.focusSlot in occupied.map { it.slot }) {
+            s.focusSlot
+        } else {
+            occupied.firstOrNull()?.slot ?: 0
+        }
+        modes.forEach { mode ->
+            entries.add(
+                GlassMenuPopup.Entry.Item(layoutLabel(mode), selected = mode == effective)
+            )
+            actions.add {
+                if (mode == AppSettings.LayoutMode.SINGLE && occupied.size > 1) {
+                    showSingleCameraMenu(occupied, focus)
+                } else {
+                    viewModel.setDisplayMode(
+                        mode,
+                        if (mode == AppSettings.LayoutMode.SINGLE) focus else null
+                    )
+                }
+            }
+        }
+        GlassMenuPopup(this, entries) { idx ->
+            actions.getOrNull(idx)?.invoke()
+        }.show(binding.btnLayout)
+    }
+
+    /** 单路显示：再弹一层“选择哪一路”，四路摄像头都能直接切换 */
+    private fun showSingleCameraMenu(occupied: List<CameraSupervisor.SlotRuntime>, focus: Int) {
+        if (occupied.isEmpty()) return
+        val entries = occupied.map { rt ->
+            val name = rt.config?.name?.takeIf { it.isNotBlank() }
+                ?: rt.device?.defaultName?.takeIf { it.isNotBlank() }
+                ?: "画面 ${rt.slot + 1}"
+            GlassMenuPopup.Entry.Item(name, selected = rt.slot == focus)
+        }
+        GlassMenuPopup(this, entries) { idx ->
+            val slot = occupied.getOrNull(idx)?.slot ?: return@GlassMenuPopup
+            viewModel.setDisplayMode(AppSettings.LayoutMode.SINGLE, slot)
+        }.show(binding.btnLayout)
     }
 
     /** 总录像按钮默认外观（录制前缓存，停止时恢复） */
@@ -374,6 +468,7 @@ class MainActivity : AppCompatActivity() {
                 // 隐藏而不是移除：TextureView 始终留在视图树里，避免 HWUI 仍持有
                 // 已 detach 的 Surface 导致原生崩溃。重排布局只改 visible。
                 panel.ui.root.visibility = View.GONE
+                panel.ui.viewWarn.setWarning(false)
                 panel.lastKey = null
                 panel.renderer.active = false
                 continue
@@ -474,15 +569,16 @@ class MainActivity : AppCompatActivity() {
         // 镜像/旋转高亮上面单独设置，录像按钮红会覆盖，这里不冲突（不同按钮）
         panel.ui.tvRec.visibility = if (recording && overlayVisible) View.VISIBLE else View.GONE
 
-        // 盲区预警红框（全屏时也保留）
-        panel.ui.viewWarn.visibility =
-            if (app.warningManager.alerts.value[slot] == true) View.VISIBLE else View.GONE
+        // 盲区预警红框（全屏时也保留）：多圈脉冲光晕 + 角标 + 边缘红晕
+        val warning = app.warningManager.alerts.value[slot] == true
+        panel.ui.viewWarn.setWarning(warning)
     }
 
     // ------------------------------------------------------------------
     // 底部设备栏
     // ------------------------------------------------------------------
     private fun renderDeviceChips() {
+        updateTopBarVisibility()
         val container = binding.llDeviceList
         container.removeAllViews()
         val devices = viewModel.devices.value
@@ -495,7 +591,7 @@ class MainActivity : AppCompatActivity() {
                         ContextCompat.getColor(this@MainActivity, R.color.status_ok)
                     else ContextCompat.getColor(this@MainActivity, R.color.status_err)
                 )
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f * DevicePerformance.uiScale())
                 background = ContextCompat.getDrawable(this@MainActivity, R.drawable.bg_chip)
                 setPadding(dp(12), dp(6), dp(12), dp(6))
                 if (!device.hasPermission) {
@@ -539,16 +635,17 @@ class MainActivity : AppCompatActivity() {
         if (caps.isNullOrEmpty()) {
             toast("该摄像头暂无可选档位"); return
         }
-        val labels = caps.map { it.display }.toTypedArray()
-        val checked = caps.indexOfFirst { it == rt.activeProfile }
-        AlertDialog.Builder(this)
-            .setTitle(R.string.dialog_profile_title)
-            .setSingleChoiceItems(labels, checked) { d, which ->
-                viewModel.setProfile(slot, caps[which])
-                d.dismiss()
-            }
-            .setNegativeButton(R.string.common_cancel, null)
-            .show()
+        val panel = panels.firstOrNull { it.slot == slot }
+        val entries = caps.map { p ->
+            GlassMenuPopup.Entry.Item(
+                p.display,
+                selected = p == rt.activeProfile
+            )
+        }
+        val anchor = panel?.ui?.btnProfile ?: binding.btnLayout
+        GlassMenuPopup(this, entries) { which ->
+            caps.getOrNull(which)?.let { viewModel.setProfile(slot, it) }
+        }.show(anchor)
     }
 
     private fun showRenameDialog(slot: Int) {
@@ -601,7 +698,9 @@ class MainActivity : AppCompatActivity() {
             AppSettings.LayoutMode.entries.forEachIndexed { i, m ->
                 layoutGroup.addView(RadioButton(this@MainActivity).apply {
                     text = when (m) {
-                        AppSettings.LayoutMode.AUTO -> getString(R.string.layout_auto)
+                        AppSettings.LayoutMode.AUTO -> getString(R.string.layout_quad)
+                        AppSettings.LayoutMode.TRIPLE -> getString(R.string.layout_triple)
+                        AppSettings.LayoutMode.DUAL -> getString(R.string.layout_dual)
                         AppSettings.LayoutMode.SINGLE -> getString(R.string.layout_single)
                     }; id = i
                 })
@@ -1017,12 +1116,16 @@ class MainActivity : AppCompatActivity() {
     override fun onStop() {
         // 先让渲染器丢掉新帧，并等待正在绘制的帧结束，再注销监听，
         // 最后才允许系统销毁 TextureView 的 Surface（避免 HWUI/GLThread 竞态崩溃）
-        panels.forEach { it.renderer.pause() }
+        panels.forEach {
+            it.ui.viewWarn.setWarning(false)
+            it.renderer.pause()
+        }
         previewController.stop(app.cameraManager)
         super.onStop()
     }
 
     override fun onResume() {
+        if (recreateIfThemeChanged()) return
         super.onResume()
         viewModel.refresh()
     }

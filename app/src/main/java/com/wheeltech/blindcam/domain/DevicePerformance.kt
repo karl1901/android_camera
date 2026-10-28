@@ -141,16 +141,24 @@ object DevicePerformance {
     }
 
     /**
-     * UI 紧凑比例：平板/车机宽屏不需要把 44dp 按钮继续放大，
-     * 小屏也不应把标题缩得过小。返回 0.85..1.15 的缩放系数。
+     * UI 紧凑比例：同时看宽和高。
+     * 车机横屏常见 1280×720 / 1280×480，手机横屏短边只有 320–360dp；
+     * 不能只用宽度判断，否则 766×320dp 的手机也会用“平板”字号/大按钮。
      */
     fun uiScale(): Float {
-        val based = when {
-            screenWidthDp >= 1100 -> 0.92f
-            screenWidthDp >= 800 -> 1.0f
-            screenWidthDp >= 600 -> 1.0f
-            else -> 0.92f
+        val shortDp = minOf(screenWidthDp, screenHeightDp).coerceAtLeast(200)
+        val byHeight = when {
+            shortDp >= 700 -> 1.08f
+            shortDp >= 480 -> 1.00f
+            shortDp >= 380 -> 0.94f
+            else -> 0.88f
         }
-        return based.coerceIn(0.85f, 1.15f)
+        val byWidth = when {
+            screenWidthDp >= 1200 -> 1.06f
+            screenWidthDp >= 900 -> 1.02f
+            screenWidthDp >= 600 -> 1.00f
+            else -> 0.94f
+        }
+        return (byHeight * byWidth).coerceIn(0.82f, 1.14f)
     }
 }

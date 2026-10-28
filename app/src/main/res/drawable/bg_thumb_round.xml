@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 相册缩略图圆角底：ImageView clipToOutline 后，预览图会被裁成圆角，不再顶到卡片圆角 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#16000000" />
+    <corners android:radius="14dp" />
+</shape>

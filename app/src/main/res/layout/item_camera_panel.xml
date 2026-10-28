@@ -21,7 +21,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="top|start"
-        android:layout_margin="8dp"
+        android:layout_margin="@dimen/ui_capture_margin"
         android:orientation="horizontal">
 
         <TextView
@@ -29,27 +29,33 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:background="@drawable/bg_pill"
-            android:paddingStart="12dp"
-            android:paddingTop="6dp"
-            android:paddingEnd="12dp"
-            android:paddingBottom="6dp"
+            android:paddingStart="@dimen/ui_panel_pill_pad_h"
+            android:paddingTop="@dimen/ui_panel_pill_pad_v"
+            android:paddingEnd="@dimen/ui_panel_pill_pad_h"
+            android:paddingBottom="@dimen/ui_panel_pill_pad_v"
             android:text="@string/camera_unnamed"
             android:textColor="@color/white"
-            android:textSize="13sp" />
+            android:textSize="@dimen/ui_panel_pill_text"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:maxWidth="160dp" />
 
         <TextView
             android:id="@+id/btnProfile"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginStart="6dp"
+            android:layout_marginStart="@dimen/ui_capture_margin"
             android:background="@drawable/bg_pill"
-            android:paddingStart="10dp"
-            android:paddingTop="6dp"
-            android:paddingEnd="10dp"
-            android:paddingBottom="6dp"
+            android:paddingStart="@dimen/ui_panel_pill_pad_h"
+            android:paddingTop="@dimen/ui_panel_pill_pad_v"
+            android:paddingEnd="@dimen/ui_panel_pill_pad_h"
+            android:paddingBottom="@dimen/ui_panel_pill_pad_v"
             android:text="—"
             android:textColor="@color/white"
-            android:textSize="13sp" />
+            android:textSize="@dimen/ui_panel_pill_text"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:maxWidth="160dp" />
     </LinearLayout>
 
     <!-- 未授权 / 错误 占位（居中） -->
@@ -59,10 +65,10 @@
         android:layout_height="wrap_content"
         android:layout_gravity="center"
         android:gravity="center"
-        android:padding="16dp"
+        android:padding="10dp"
         android:text="@string/camera_no_permission"
         android:textColor="#CCFFFFFF"
-        android:textSize="14sp"
+        android:textSize="@dimen/ui_panel_pill_text"
         android:visibility="gone" />
 
     <!-- 录制指示 -->
@@ -71,15 +77,15 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="top|end"
-        android:layout_margin="8dp"
+        android:layout_margin="@dimen/ui_capture_margin"
         android:background="@drawable/bg_pill"
-        android:paddingStart="10dp"
-        android:paddingTop="6dp"
-        android:paddingEnd="10dp"
-        android:paddingBottom="6dp"
+        android:paddingStart="@dimen/ui_panel_pill_pad_h"
+        android:paddingTop="@dimen/ui_panel_pill_pad_v"
+        android:paddingEnd="@dimen/ui_panel_pill_pad_h"
+        android:paddingBottom="@dimen/ui_panel_pill_pad_v"
         android:text="@string/recording_dot"
         android:textColor="#FFFF5252"
-        android:textSize="13sp"
+        android:textSize="@dimen/ui_panel_pill_text"
         android:visibility="gone" />
 
     <!-- 右下角：拍照 / 录像 / 镜像 / 旋转 -->
@@ -87,8 +93,8 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|end"
-        android:layout_marginEnd="8dp"
-        android:layout_marginBottom="8dp"
+        android:layout_marginEnd="@dimen/ui_capture_margin"
+        android:layout_marginBottom="@dimen/ui_capture_margin"
         android:orientation="horizontal">
 
         <ImageButton
@@ -116,11 +122,15 @@
             android:src="@drawable/ic_rotate" />
     </LinearLayout>
 
-    <!-- 盲区预警红框（物体进入视野时显示，全屏也保留） -->
-    <View
+    <!-- 盲区预警：多圈红色脉冲光晕 + 角标 + 边缘红晕，触发时像“中枪”警示 -->
+    <com.wheeltech.blindcam.ui.widget.WarningOverlayView
         android:id="@+id/viewWarn"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:background="@drawable/bg_warning_border"
+        android:clickable="false"
+        android:focusable="false"
+        android:importantForAccessibility="no"
         android:visibility="gone" />
 </FrameLayout>
+
+

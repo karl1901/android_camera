@@ -249,14 +249,16 @@ class Mp4Recorder(
         }
     }
 
-    /** 结束编码并落盘 MP4，返回文件；无帧时返回 null */
+    /** 结束编码并落盘 MP4，返回文件；无帧/无 muxer/空文件时返回 null */
     fun finish(): File? {
         if (!started) {
             runCatching { cacheFile.delete() }
             return null
         }
+        var valid = false
         try {
             drainEncoder(true)
+            valid = muxerStarted && frameCount > 0
         } finally {
             runCatching { codec?.stop() }
             runCatching { codec?.release() }
@@ -269,6 +271,12 @@ class Mp4Recorder(
             runCatching { eglSurface?.let { egl?.destroySurface(it) } }
             runCatching { egl?.release() }
             runCatching { inputSurface?.release() }
+        }
+        if (!valid || !cacheFile.exists() || cacheFile.length() <= 0L) {
+            Logger.w(TAG, "encoder finish invalid frames=$frameCount muxer=$muxerStarted " +
+                "size=${cacheFile.length()}")
+            runCatching { cacheFile.delete() }
+            return null
         }
         Logger.i(TAG, "encoder finish frames=$frameCount -> ${cacheFile.name}")
         return cacheFile

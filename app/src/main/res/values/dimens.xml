@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  全局 UI 尺寸：默认按“短横屏/手机”（可用高度 < 400dp）设计，
+  values-h400dp / values-h600dp 依次放大，避免在车机/平板上字和按钮过小。
+  所有页面只引用这些 dimen，不再散落固定 44dp/18sp。
+-->
+<resources>
+    <dimen name="ui_tool_button">34dp</dimen>
+    <dimen name="ui_tool_padding">8dp</dimen>
+    <dimen name="ui_tool_margin">2dp</dimen>
+    <dimen name="ui_back_button">34dp</dimen>
+    <dimen name="ui_back_padding">8dp</dimen>
+    <dimen name="ui_capture_button">28dp</dimen>
+    <dimen name="ui_capture_padding">6dp</dimen>
+    <dimen name="ui_capture_margin">4dp</dimen>
+    <dimen name="ui_top_bar_pad_h">10dp</dimen>
+    <dimen name="ui_top_bar_pad_v">4dp</dimen>
+    <dimen name="ui_bar_title">17sp</dimen>
+    <dimen name="ui_page_pad_h">10dp</dimen>
+    <dimen name="ui_page_pad_v">8dp</dimen>
+    <dimen name="ui_card_pad">12dp</dimen>
+    <dimen name="ui_card_title">16sp</dimen>
+    <dimen name="ui_body">12sp</dimen>
+    <dimen name="ui_small">10sp</dimen>
+    <dimen name="ui_pill_pad_h">10dp</dimen>
+    <dimen name="ui_pill_pad_v">6dp</dimen>
+    <dimen name="ui_pill_text">12sp</dimen>
+    <dimen name="ui_tab_height">34dp</dimen>
+    <dimen name="ui_tab_text">12sp</dimen>
+    <dimen name="ui_center_play">48dp</dimen>
+    <dimen name="ui_player_button">40dp</dimen>
+    <dimen name="ui_gallery_pad">8dp</dimen>
+    <dimen name="ui_gallery_name">12sp</dimen>
+    <dimen name="ui_gallery_time">10sp</dimen>
+    <dimen name="ui_menu_row">40dp</dimen>
+    <dimen name="ui_menu_text">13sp</dimen>
+    <dimen name="ui_panel_pill_text">11sp</dimen>
+    <dimen name="ui_panel_pill_pad_h">8dp</dimen>
+    <dimen name="ui_panel_pill_pad_v">4dp</dimen>
+    <dimen name="ui_map_height">220dp</dimen>
+    <dimen name="ui_gallery_gap">4dp</dimen>
+</resources>
+
+

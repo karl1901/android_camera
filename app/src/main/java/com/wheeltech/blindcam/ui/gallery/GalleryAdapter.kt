@@ -19,7 +19,7 @@ import java.util.concurrent.LinkedBlockingQueue
 
 /** 媒体唯一 key：优先私有文件绝对路径，其次 SAF uri，最后文件名 */
 internal fun GalleryMedia.keyOf(): String =
-    file?.absolutePath ?: uri?.toString() ?: name
+    groupKey ?: file?.absolutePath ?: uri?.toString() ?: name
 
 /**
  * 相册网格适配器（RecyclerView）。
@@ -110,15 +110,28 @@ class GalleryAdapter(
             holder.tvDuration.visibility = View.GONE
         }
 
-        // 多选勾选框
+        // 多选勾选框：选中态用当前主题 accent 色，避免科技蓝主题里仍是粉紫
         if (sel.active) {
             holder.imgCheck.visibility = View.VISIBLE
-            holder.imgCheck.setImageResource(
-                if (key in sel.selectedKeys) R.drawable.bg_checkbox_checked
-                else R.drawable.bg_checkbox_unchecked
-            )
+            val accent = android.util.TypedValue()
+            ctx.theme.resolveAttribute(R.attr.accentColor, accent, true)
+            if (key in sel.selectedKeys) {
+                holder.imgCheck.background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.OVAL
+                    setColor(accent.data)
+                }
+                holder.imgCheck.setImageResource(R.drawable.ic_check_white)
+                holder.imgCheck.imageAlpha = 255
+            } else {
+                holder.imgCheck.background = androidx.core.content.ContextCompat.getDrawable(
+                    ctx, R.drawable.bg_checkbox_unchecked
+                )
+                holder.imgCheck.setImageDrawable(null)
+            }
         } else {
             holder.imgCheck.visibility = View.GONE
+            holder.imgCheck.background = null
+            holder.imgCheck.setImageDrawable(null)
         }
 
         // 点击 / 长按（整卡）
@@ -197,7 +210,11 @@ class GalleryAdapter(
             val key = m.keyOf()
             cache.get(key)?.let { return it }
             val bmp: Bitmap? = try {
-                if (m.isVideo) videoFrame(m, ctx) else photoSample(m, ctx)
+                when {
+                    m.previewFile != null || m.previewUri != null -> previewSample(m, ctx)
+                    m.isVideo -> videoFrame(m, ctx)
+                    else -> photoSample(m, ctx)
+                }
             } catch (t: Throwable) {
                 Logger.w("thumb", "load failed $key: ${t.message}")
                 null
@@ -228,6 +245,26 @@ class GalleryAdapter(
             return decode(o)
         }
 
+        private fun previewSample(m: GalleryMedia, ctx: android.content.Context): Bitmap? {
+            val decode: (BitmapFactory.Options?) -> Bitmap? = { opts ->
+                m.previewFile?.let {
+                    if (opts == null) BitmapFactory.decodeFile(it.absolutePath)
+                    else BitmapFactory.decodeFile(it.absolutePath, opts)
+                } ?: m.previewUri?.let { u ->
+                    ctx.contentResolver.openInputStream(u)?.use { stream ->
+                        if (opts == null) BitmapFactory.decodeStream(stream)
+                        else BitmapFactory.decodeStream(stream, null, opts)
+                    }
+                }
+            }
+            val bo = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            decode(bo)
+            var sample = 1
+            var w = bo.outWidth; var h = bo.outHeight
+            while (w / 2 >= THUMB_W && h / 2 >= THUMB_H) { w /= 2; h /= 2; sample *= 2 }
+            return decode(BitmapFactory.Options().apply { inSampleSize = sample })
+        }
+
         private fun videoFrame(m: GalleryMedia, ctx: android.content.Context): Bitmap? {
             val mmr = MediaMetadataRetriever()
             return try {
@@ -245,3 +282,4 @@ class GalleryAdapter(
         }
     }
 }
+
